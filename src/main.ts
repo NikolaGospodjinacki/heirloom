@@ -2,19 +2,26 @@ import './style.css';
 
 import { applyCamera, clampCamera, screenToWorldPoint, Camera, TS } from './render/view';
 import {
-  drawBorder, drawDrop, drawExitPad, drawGround, drawHero, drawMob, drawNode,
-  drawPopup, drawProjectile, drawSlash,
+  drawBorder, drawDashTrail, drawDrop, drawExitPad, drawGround, drawHero, drawMob,
+  drawNode, drawParticle, drawPopup, drawProjectile, drawSlash,
 } from './render/draw';
+import { gearLook } from './render/look';
 import { Town, buildTown, drawTown, nearestBuilding, tickTown } from './game/town';
-import { Zone, buildZone, tickZone } from './game/zone';
+import { Zone, buildZone, tickZone, tryDash } from './game/zone';
 import {
-  GameState, derived, die, load, newGame, pushLog, save, tickHomestead, wipe,
+  GameState, derived, die, lastMemoryEarned, load, newGame, pushLog, save,
+  tickHomestead, wipe,
 } from './game/state';
-import { drawHud } from './ui/hud';
-import { closePanel, openPanel, panelOpen, refreshPanel, restockShop, UICtx } from './ui/panels';
+import { drawHud, resetHud } from './ui/hud';
+import {
+  closePanel, openPanel, panelOpen, refreshPanel, restockShop, setShopTab, UICtx,
+} from './ui/panels';
+import { closeDialogue, dialogueOpen, openDialogue } from './ui/dialogue';
+import { guildTalk, shopTalk, smithTalk } from './ui/talk';
 import { clear, el, toast } from './ui/dom';
 import { cancelDrag } from './ui/grid';
 import { TRAITS } from './game/bloodline';
+import { TECHNIQUES } from './game/techniques';
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -37,56 +44,69 @@ let st: GameState | null = null;
 let town: Town | null = null;
 let zone: Zone | null = null;
 const cam: Camera = { x: 0, y: 0, zoom: 1 };
-
-/** Chunky JRPG scale, but never so tight that a wolf can charge in unseen. */
-function targetZoom(): number {
-  return Math.max(1.3, Math.min(2.1, Math.min(W, H) / 520));
-}
 let walkT = 0;
 
 const keys = new Set<string>();
 let mouseX = 0, mouseY = 0;
 let mouseDown = false;
 
+/** Anything modal is open: panels or a conversation. */
+function uiBlocking(): boolean {
+  return panelOpen() || dialogueOpen();
+}
+
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   const k = e.key.toLowerCase();
   keys.add(k);
+  if (dialogueOpen()) return;           // the dialogue owns its own keys
   if (k === 'tab') { e.preventDefault(); toggle('bag'); }
-  else if (k === 'c') { if (st && st.scene !== 'creation') toggle('char'); }
+  else if (k === 'c') { toggle('char'); }
+  else if (k === 'k') { toggle('tech'); }
   else if (k === 'escape') { if (panelOpen()) { cancelDrag(); closePanel(); } }
   else if (k === 'e') { interact(); }
   else if (k === 'm') { if (st && st.scene === 'town') toggle('gate'); }
+  else if (k === ' ') {
+    if (st && st.scene === 'zone' && zone && !uiBlocking()) {
+      e.preventDefault();
+      const [mx, my] = moveVector();
+      tryDash(zone, st, mx, my);
+    }
+  }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-window.addEventListener('blur', () => keys.clear());
+window.addEventListener('blur', () => { keys.clear(); mouseDown = false; });
+document.addEventListener('mouseleave', () => { mouseDown = false; });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { mouseDown = false; keys.clear(); }
+});
 
 canvas.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 canvas.addEventListener('mousedown', (e) => { if (e.button === 0) mouseDown = true; });
 window.addEventListener('mouseup', () => { mouseDown = false; });
-window.addEventListener('blur', () => { mouseDown = false; });
-document.addEventListener('mouseleave', () => { mouseDown = false; });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { mouseDown = false; keys.clear(); } });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 function uiCtx(): UICtx {
   return {
     st: st!,
     close: closePanel,
-    refresh: () => { if (st) drawHud(st, st.scene === 'zone' ? 'zone' : 'town'); },
+    refresh: () => { if (st) drawHud(st, st.scene === 'zone' ? 'zone' : 'town', zone); },
     travel: (zoneId, boss) => startRun(zoneId, boss),
     save: () => { if (st) save(st); },
   };
 }
 
-function toggle(kind: 'bag' | 'char' | 'gate'): void {
+function toggle(kind: 'bag' | 'char' | 'tech' | 'gate'): void {
   if (!st || st.scene === 'creation' || st.scene === 'death') return;
+  if (dialogueOpen()) return;
   if (panelOpen()) { cancelDrag(); closePanel(); return; }
   openPanel(kind, uiCtx());
 }
 
+// --------------------------------------------------------------- buildings
+
 function interact(): void {
-  if (!st || panelOpen()) return;
+  if (!st || uiBlocking()) return;
   if (st.scene === 'zone' && zone) {
     if (zone.nearExit) returnToTown();
     return;
@@ -94,8 +114,34 @@ function interact(): void {
   if (st.scene !== 'town' || !town) return;
   const b = nearestBuilding(town);
   if (!b) return;
-  const map = { guild: 'guild', shop: 'shop', smith: 'smith', home: 'home', gate: 'gate' } as const;
-  openPanel(map[b.id], uiCtx());
+  const c = uiCtx();
+  const leave = () => { closeDialogue(); };
+
+  switch (b.id) {
+    case 'guild':
+      openDialogue(guildTalk(st, {
+        board: () => { closeDialogue(); openPanel('guild', c); },
+        turnIn: () => { closeDialogue(); openPanel('guild', c); },
+        leave,
+      }));
+      break;
+    case 'shop':
+      openDialogue(shopTalk(st, {
+        buy: () => { closeDialogue(); setShopTab('buy'); openPanel('shop', c); },
+        sell: () => { closeDialogue(); setShopTab('sell'); openPanel('shop', c); },
+        village: () => { closeDialogue(); setShopTab('village'); openPanel('shop', c); },
+        leave,
+      }));
+      break;
+    case 'smith':
+      openDialogue(smithTalk(st, {
+        forge: () => { closeDialogue(); openPanel('smith', c); },
+        leave,
+      }));
+      break;
+    case 'home': openPanel('home', c); break;
+    case 'gate': openPanel('gate', c); break;
+  }
 }
 
 // ----------------------------------------------------------------- scenes
@@ -114,10 +160,9 @@ function returnToTown(): void {
   st.scene = 'town';
   zone = null;
   town = buildTown(st);
-  // arrive at the gate
   const gate = town.buildings.find((b) => b.id === 'gate')!;
   town.px = gate.x + gate.w / 2;
-  town.py = gate.y + gate.d + 40;
+  town.py = gate.y + gate.d + 46;
   restockShop(st);
   save(st);
 }
@@ -141,16 +186,17 @@ function showCreation(): void {
   box.append(
     el('h1', {}, 'HEIRLOOM'),
     el('p', { class: 'lead' },
-      'A life is short and mostly unlucky. A bloodline is long. Choose what the first of your name was good at.'),
+      'A life is short and mostly unlucky. A bloodline is long. ' +
+      'Choose what the first of your name was good at.'),
   );
   const cards = el('div', { class: 'classcards' });
-
   const mk = (id: 'warrior' | 'wizard', name: string, desc: string, bits: string) => {
     const c = el('div', { class: 'classcard' });
     c.append(el('h3', {}, name), el('p', {}, desc), el('div', { class: 'muted' }, bits));
     c.addEventListener('click', () => {
       st = newGame(id);
       town = buildTown(st);
+      resetHud();
       clear(overlay);
       save(st);
       toast('The ' + st.hero.name.split(' ').pop() + ' line begins');
@@ -166,17 +212,13 @@ function showCreation(): void {
       'INT 9 · starts with an apprentice staff'),
   );
   box.append(cards);
+  box.append(el('div', { class: 'muted', style: 'margin-top:20px' },
+    'Every heir is rolled fresh: attributes, looks, and one trait out of ' + TRAITS.length + '. ' +
+    'Movement techniques (' + TECHNIQUES.length + ' of them) are learned once and never forgotten.'));
 
-  const traitList = el('div', { class: 'muted', style: 'margin-top:20px' },
-    'Every heir is rolled fresh: attributes, looks, and one trait out of ' + TRAITS.length + '. Some of them are gifts.');
-  box.append(traitList);
-
-  const cont = document.createElement('div');
-  cont.style.marginTop = '14px';
   const wipeBtn = el('button', { class: 'btn small danger' }, 'Erase saved bloodline');
   wipeBtn.addEventListener('click', () => { wipe(); toast('Save erased'); });
-  cont.append(wipeBtn);
-  box.append(cont);
+  box.append(el('div', { style: 'margin-top:14px' }, wipeBtn));
 
   scrim.append(box);
   overlay.append(scrim);
@@ -187,9 +229,10 @@ function showCreation(): void {
 function showDeath(cause: string): void {
   const overlay = document.getElementById('overlay')!;
   clear(overlay);
+  const s = st!;
   const scrim = el('div', { class: 'scrim' });
   const box = el('div', { class: 'big death' });
-  const s = st!;
+  const mem = lastMemoryEarned(s);
   box.append(
     el('h1', {}, 'YOU DIED'),
     el('p', { class: 'epitaph' },
@@ -200,25 +243,27 @@ function showDeath(cause: string): void {
 
   const keep = el('div', { class: 'heirbox' });
   keep.append(el('h3', { style: 'margin:0 0 10px' }, 'What survives you'));
-  keep.append(el('div', { class: 'muted' }, '▸ A quarter of every skill, passed down as instinct.'));
-  keep.append(el('div', { class: 'muted' }, '▸ Everything in the heirloom chest at home (' + s.chest.items.length + ' items).'));
-  keep.append(el('div', { class: 'muted' }, '▸ The homestead: plots, hired hands and stores.'));
-  keep.append(el('div', { class: 'muted' }, '▸ A quarter of your coin, ' + Math.round(s.gold * 0.25) + 'g, found under the floor.'));
+  const line = (t: string, cls = 'muted') => keep.append(el('div', { class: cls }, '▸ ' + t));
+  line('A quarter of every skill, passed down as instinct.');
+  line(mem + ' memory — your heir can spend it on techniques you learned the hard way.');
+  line('Everything in the heirloom chest at home (' + s.chest.items.length + ' items).');
+  line('The homestead: plots, hired hands and stores.');
+  line('A quarter of your coin, ' + Math.round(s.gold * 0.25) + 'g, found under the floor.');
   keep.append(el('div', { class: 'sep' }));
-  keep.append(el('div', { class: 'warn' }, '▸ Your pack and everything in it is buried with you.'));
-  if (s.donated > 0) {
-    keep.append(el('div', { class: 'muted' }, '▸ ' + s.village.name + ' remembers the ' + s.donated + 'g you gave.'));
-  }
+  line('Your pack and everything you were wearing is buried with you.', 'warn');
+  if (s.donated > 0) line(s.village.name + ' remembers the ' + s.donated + 'g you gave.');
   box.append(keep);
 
-  const b = el('button', { class: 'btn primary', style: 'margin-top:22px;padding:12px 26px;font-size:14px' },
-    'Years pass…');
+  const b = el('button', {
+    class: 'btn primary',
+    style: 'margin-top:22px;padding:12px 26px;font-size:14px',
+  }, 'Years pass…');
   b.addEventListener('click', () => {
     die(s, cause);
     town = buildTown(s);
+    resetHud();
     clear(overlay);
     save(s);
-    toast(s.hero.name + ' takes up the name');
     showHeirIntro();
   });
   box.append(b);
@@ -229,12 +274,14 @@ function showDeath(cause: string): void {
 function showHeirIntro(): void {
   const s = st!;
   const overlay = document.getElementById('overlay')!;
+  clear(overlay);
   const scrim = el('div', { class: 'scrim' });
   const box = el('div', { class: 'big' });
   const d = derived(s);
   box.append(
     el('h1', { style: 'font-size:30px' }, s.hero.name),
-    el('p', { class: 'lead' }, 'Generation ' + s.generation + ' of the line, in ' + s.village.name +
+    el('p', { class: 'lead' },
+      'Generation ' + s.generation + ' of the line, in ' + s.village.name +
       ' — a ' + s.village.preset + ' village these days.'),
   );
   const grid = el('div', { class: 'heirbox' });
@@ -246,14 +293,17 @@ function showHeirIntro(): void {
     row('Agility', String(s.hero.stats.agi)),
     row('Luck', String(s.hero.stats.luck)),
     el('div', { class: 'sep' }),
-    el('div', { class: 't', style: 'font-weight:700;color:' + (s.hero.trait.good ? '#8fd07a' : '#e0a25a') }, s.hero.trait.name),
+    el('div', { style: 'font-weight:700;color:' + (s.hero.trait.good ? '#8fd07a' : '#e0a25a') },
+      s.hero.trait.name),
     el('div', { class: 'muted' }, s.hero.trait.desc),
     el('div', { class: 'sep' }),
     row('Max health', String(d.maxHp)),
     row('Inherited skill', Object.keys(s.legacy.legacy).length + ' disciplines'),
+    row('Memory to spend', String(s.memory)),
   );
   box.append(grid);
-  const b = el('button', { class: 'btn primary', style: 'margin-top:20px;padding:11px 24px' }, 'Take up the name');
+  const b = el('button', { class: 'btn primary', style: 'margin-top:20px;padding:11px 24px' },
+    'Take up the name');
   b.addEventListener('click', () => { clear(overlay); });
   box.append(b);
   scrim.append(box);
@@ -293,12 +343,13 @@ function frame(now: number): void {
   st.lastRealTick = Date.now();
 
   if (st.scene === 'town' && town) {
-    const blocked = panelOpen();
+    const blocked = uiBlocking();
     const [mx, my] = blocked ? [0, 0] : moveVector();
     if (mx || my) walkT += dt;
     town.walkT = walkT;
     const d = derived(st);
     tickTown(town, dt, mx, my, d.speed * 0.85);
+
     cam.zoom = targetZoom();
     cam.x = town.px; cam.y = town.py;
     clampCamera(cam, town.w * TS, town.h * TS, W, H);
@@ -306,25 +357,25 @@ function frame(now: number): void {
     applyCamera(ctx, cam, W, H);
     drawTown(ctx, town, st, blocked ? null : nearestBuilding(town));
     ctx.restore();
-    drawHud(st, 'town');
-    // gentle out-of-combat regen
-    st.hp = Math.min(d.maxHp, st.hp + dt * 1.2);
-    st.mana = Math.min(d.maxMana, st.mana + dt * 3);
+    drawHud(st, 'town', null);
+
+    st.hp = Math.min(d.maxHp, st.hp + dt * (d.hpRegen * 2));
+    st.mana = Math.min(d.maxMana, st.mana + dt * 4);
+    st.stamina = Math.min(d.maxStamina, st.stamina + dt * d.staminaRegen * 2);
   } else if (st.scene === 'zone' && zone) {
-    const blocked = panelOpen();
+    const blocked = uiBlocking();
     const [mx, my] = blocked ? [0, 0] : moveVector();
     if (mx || my) walkT += dt;
 
-    // face the cursor
     if (!blocked) {
       const [wx, wy] = screenToWorldPoint(cam, W, H, mouseX, mouseY);
       const dx = wx - zone.px, dy = wy - zone.py;
       if (Math.hypot(dx, dy) > 6) zone.facing = Math.atan2(dy, dx);
     }
 
-    const attack = !blocked && (keys.has(' ') || mouseDown);
+    const attack = !blocked && mouseDown;
     tickZone(zone, st, dt, { mx, my, attack }, {
-      onDeath: (cause) => onDeath(cause),
+      onDeath,
       onExit: returnToTown,
     });
 
@@ -333,18 +384,31 @@ function frame(now: number): void {
       cam.x += (zone.px - cam.x) * Math.min(1, dt * 8);
       cam.y += (zone.py - cam.y) * Math.min(1, dt * 8);
       clampCamera(cam, zone.def.w * TS, zone.def.h * TS, W, H);
+
+      const shake = zone.shake;
       ctx.save();
       applyCamera(ctx, cam, W, H);
+      if (shake > 0.2) {
+        ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+      }
       renderZone(zone, st);
       ctx.restore();
-      drawHud(st, 'zone');
+      drawHud(st, 'zone', zone);
+
+      if (zone.killGlow > 0) {
+        ctx.fillStyle = 'rgba(255,240,200,' + zone.killGlow * 0.22 + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
       if (zone.hurtT > 0) {
-        ctx.fillStyle = 'rgba(180,40,30,' + (zone.hurtT * 0.9) + ')';
+        ctx.fillStyle = 'rgba(180,40,30,' + zone.hurtT * 0.9 + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+      if (st.hp / derived(st).maxHp < 0.28) {
+        const pulse = 0.10 + 0.07 * Math.sin(now * 0.005);
+        ctx.fillStyle = 'rgba(150,20,20,' + pulse + ')';
         ctx.fillRect(0, 0, W, H);
       }
     }
-  } else if (st.scene === 'creation') {
-    paintBackdrop();
   } else {
     paintBackdrop();
   }
@@ -352,10 +416,16 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
+/** Chunky JRPG scale, but never so tight that a wolf can charge in unseen. */
+function targetZoom(): number {
+  return Math.max(1.3, Math.min(1.95, Math.min(W, H) / 560));
+}
+
 function renderZone(z: Zone, s: GameState): void {
   drawGround(ctx, z.def.w, z.def.h, z.tiles, z.def.ground, z.def.ground2, 0);
   drawBorder(ctx, z.def.w, z.def.h);
   drawExitPad(ctx, z);
+  drawDashTrail(ctx, z.dashTrail, s.hero.appearance);
 
   type R = { d: number; f: () => void };
   const list: R[] = [];
@@ -364,13 +434,17 @@ function renderZone(z: Zone, s: GameState): void {
   for (const dr of z.drops) list.push({ d: dr.y, f: () => drawDrop(ctx, dr) });
   list.push({
     d: z.py,
-    f: () => drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, z.hurtT, z.swingT),
+    f: () => drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, {
+      hurt: z.hurtT, swing: z.swingT, swingMax: 0.2,
+      gear: gearLook(s.equipped), iframes: z.iframes,
+    }),
   });
   list.sort((a, b) => a.d - b.d);
   for (const r of list) r.f();
 
   for (const sl of z.slashes) drawSlash(ctx, sl);
   for (const p of z.projectiles) drawProjectile(ctx, p);
+  for (const p of z.particles) drawParticle(ctx, p);
   for (const p of z.popups) drawPopup(ctx, p);
 }
 
@@ -401,7 +475,6 @@ function boot(): void {
   const loaded = load();
   if (loaded) {
     st = loaded;
-    // hands kept working while the tab was closed
     const away = Math.min(8 * 3600, (Date.now() - (loaded.lastRealTick || Date.now())) / 1000);
     if (away > 30) {
       const before = { ...loaded.homestead.resources };
@@ -414,7 +487,7 @@ function boot(): void {
           gained.map(([k, v]) => v + ' ' + k).join(', '), 4200);
       }
     }
-    if (st.scene === 'death') { showDeath('unknown causes'); }
+    if (st.scene === 'death') showDeath('unknown causes');
     else { st.scene = 'town'; town = buildTown(st); }
   } else {
     showCreation();
@@ -425,7 +498,6 @@ function boot(): void {
 
 boot();
 
-// dev helper
 (window as unknown as Record<string, unknown>).HEIRLOOM = {
   get state() { return st; },
   get town() { return town; },

@@ -1,7 +1,8 @@
 import { RNG, rng, uid } from './rng';
 import { MONSTERS, MonsterDef, ZONES, ZoneDef } from './content';
 import { TS } from '../render/view';
-import type { Item } from './types';
+import type { Item, SkillKey } from './types';
+import { SKILL_COLOR, SKILL_NAMES } from './types';
 import { makeItem, ITEM_DEFS } from './items';
 import { autoPlace } from './backpack';
 import { GameState, derived, grantXp, pushLog, skillLevel } from './state';
@@ -20,6 +21,8 @@ export interface Mob {
   facing: number;
   dead: number;
   aggroed: boolean;
+  kbx: number; kby: number;
+  stun: number;
 }
 
 export interface Node {
@@ -29,6 +32,7 @@ export interface Node {
   hp: number; maxHp: number;
   variant: number;
   hitFlash: number;
+  shakeT: number;
   respawn: number;
 }
 
@@ -44,6 +48,8 @@ export interface Drop {
 export interface Popup {
   x: number; y: number; t: number;
   text: string; color: string; vy: number;
+  size: number;
+  life: number;
 }
 
 export interface Projectile {
@@ -52,7 +58,15 @@ export interface Projectile {
 }
 
 export interface Slash {
-  x: number; y: number; ang: number; t: number; range: number;
+  x: number; y: number; ang: number; t: number; range: number; arc: number;
+}
+
+export interface Particle {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
+  life: number; maxLife: number;
+  color: string; size: number;
+  grav: number;
 }
 
 export interface Zone {
@@ -63,6 +77,7 @@ export interface Zone {
   popups: Popup[];
   projectiles: Projectile[];
   slashes: Slash[];
+  particles: Particle[];
   exitX: number; exitY: number;
   px: number; py: number;
   facing: number;
@@ -73,6 +88,18 @@ export interface Zone {
   bossSpawned: boolean;
   nearExit: boolean;
   tiles: Uint8Array;
+  // --- movement
+  dashT: number;
+  dashDirX: number; dashDirY: number;
+  dashCharges: number;
+  dashRecharge: number;
+  iframes: number;
+  momentumT: number;
+  dashTrail: { x: number; y: number; t: number }[];
+  // --- feel
+  shake: number;
+  hitstop: number;
+  killGlow: number;
 }
 
 export function buildZone(zoneId: string, st: GameState, bossTarget?: string): Zone {
@@ -82,26 +109,31 @@ export function buildZone(zoneId: string, st: GameState, bossTarget?: string): Z
   const tiles = new Uint8Array(def.w * def.h);
   for (let i = 0; i < tiles.length; i++) tiles[i] = r.chance(0.22) ? 1 : 0;
 
+  const d = derived(st);
   const z: Zone = {
-    def, mobs: [], nodes: [], drops: [], popups: [], projectiles: [], slashes: [],
+    def, mobs: [], nodes: [], drops: [], popups: [], projectiles: [], slashes: [], particles: [],
     exitX: W * 0.5, exitY: H * 0.94,
-    px: W * 0.5, py: H * 0.9,
+    px: W * 0.5, py: H * 0.86,
     facing: -Math.PI / 2, atkCd: 0, swingT: 0, hurtT: 0, time: 0,
     bossSpawned: false, nearExit: false, tiles,
+    dashT: 0, dashDirX: 0, dashDirY: 0,
+    dashCharges: d.dash.charges, dashRecharge: 0,
+    iframes: 0, momentumT: 0, dashTrail: [],
+    shake: 0, hitstop: 0, killGlow: 0,
   };
 
-  const farFromExit = (x: number, y: number, d = 260) =>
-    Math.hypot(x - z.exitX, y - z.exitY) > d;
+  const farFromExit = (x: number, y: number, dist = 260) =>
+    Math.hypot(x - z.exitX, y - z.exitY) > dist;
 
   for (let i = 0; i < def.trees; i++) {
     let x = 0, y = 0, tries = 0;
     do { x = r.float(TS, W - TS); y = r.float(TS, H - TS); tries++; } while (!farFromExit(x, y, 150) && tries < 20);
-    z.nodes.push({ uid: uid(), kind: 'tree', x, y, hp: 34, maxHp: 34, variant: r.int(0, 2), hitFlash: 0, respawn: 0 });
+    z.nodes.push({ uid: uid(), kind: 'tree', x, y, hp: 34, maxHp: 34, variant: r.int(0, 2), hitFlash: 0, shakeT: 0, respawn: 0 });
   }
   for (let i = 0; i < def.rocks; i++) {
     let x = 0, y = 0, tries = 0;
     do { x = r.float(TS, W - TS); y = r.float(TS, H - TS); tries++; } while (!farFromExit(x, y, 150) && tries < 20);
-    z.nodes.push({ uid: uid(), kind: 'rock', x, y, hp: 46, maxHp: 46, variant: r.int(0, 2), hitFlash: 0, respawn: 0 });
+    z.nodes.push({ uid: uid(), kind: 'rock', x, y, hp: 46, maxHp: 46, variant: r.int(0, 2), hitFlash: 0, shakeT: 0, respawn: 0 });
   }
 
   for (let i = 0; i < def.density; i++) spawnMob(z, r, pickSpawn(r, def));
@@ -112,7 +144,6 @@ export function buildZone(zoneId: string, st: GameState, bossTarget?: string): Z
     m.y = H * 0.18;
     z.bossSpawned = true;
   }
-  void st;
   return z;
 }
 
@@ -135,57 +166,92 @@ function spawnMob(z: Zone, r: RNG, defId: string): Mob {
     uid: uid(), defId, x, y, hp: d.hp, maxHp: d.hp, cd: r.float(0, 1),
     windup: 0, state: 'idle', wanderT: r.float(0, 3), wx: x, wy: y,
     hitFlash: 0, facing: r.float(0, Math.PI * 2), dead: 0, aggroed: false,
+    kbx: 0, kby: 0, stun: 0,
   };
   z.mobs.push(m);
   return m;
 }
 
-export function popup(z: Zone, x: number, y: number, text: string, color: string): void {
-  z.popups.push({ x, y, t: 0, text, color, vy: -34 });
+// ------------------------------------------------------------------- effects
+
+export function popup(
+  z: Zone, x: number, y: number, text: string, color: string, size = 13, life = 1.1,
+): void {
+  z.popups.push({ x, y, t: 0, text, color, vy: -40, size, life });
 }
 
-function dropItem(z: Zone, x: number, y: number, item: Item, r: RNG): void {
-  z.drops.push({
-    uid: uid(), item,
-    x: x + r.float(-14, 14), y: y + r.float(-14, 14),
-    t: 0, vz: 90, z: 26,
+export function xpPopup(z: Zone, k: SkillKey, amount: number): void {
+  if (amount <= 0) return;
+  z.popups.push({
+    x: z.px + (Math.random() - 0.5) * 24, y: z.py - 46, t: 0,
+    text: '+' + amount + ' ' + SKILL_NAMES[k], color: SKILL_COLOR[k],
+    vy: -26, size: 11, life: 1.3,
   });
 }
 
-// ------------------------------------------------------------------- combat
+export function burst(
+  z: Zone, x: number, y: number, n: number, color: string,
+  opts: { speed?: number; size?: number; life?: number; up?: number; grav?: number } = {},
+): void {
+  const speed = opts.speed ?? 130;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.4 + Math.random() * 0.8);
+    z.particles.push({
+      x, y, z: opts.up ?? 14,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s * 0.7,
+      vz: (opts.up ?? 14) > 0 ? 40 + Math.random() * 90 : 0,
+      life: 0, maxLife: (opts.life ?? 0.45) * (0.7 + Math.random() * 0.6),
+      color, size: (opts.size ?? 3) * (0.6 + Math.random() * 0.8),
+      grav: opts.grav ?? 320,
+    });
+  }
+}
+
+function shakeIt(z: Zone, amount: number): void {
+  z.shake = Math.min(18, z.shake + amount);
+}
+
+// -------------------------------------------------------------------- combat
 
 export interface ZoneEvents {
   onDeath: (cause: string) => void;
   onExit: () => void;
 }
 
+function famMult(md: MonsterDef, d: ReturnType<typeof derived>): number {
+  return md.family === 'beast' ? d.beastMult : d.slayMult;
+}
+
 export function playerAttack(z: Zone, st: GameState): void {
-  if (z.atkCd > 0) return;
+  if (z.atkCd > 0 || z.dashT > 0) return;
   const d = derived(st);
   z.atkCd = 1 / Math.max(0.25, d.attackSpeed);
-  z.swingT = 0.18;
+  z.swingT = 0.2;
 
   if (d.attackStyle === 'bolt') {
-    const cost = 4;
-    if (st.mana < cost) {
-      popup(z, z.px, z.py, 'no mana', '#7fa8e0');
+    if (st.mana < d.boltCost) {
+      popup(z, z.px, z.py - 20, 'no mana', '#7fa8e0', 12, 0.7);
       return;
     }
-    st.mana -= cost;
+    st.mana -= d.boltCost;
     const crit = Math.random() < d.crit;
     const dmg = d.spellPower * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1);
     z.projectiles.push({
-      x: z.px, y: z.py,
-      vx: Math.cos(z.facing) * 420, vy: Math.sin(z.facing) * 420,
-      life: d.range / 420 + 0.1, dmg, crit, color: '#9d7bff',
+      x: z.px, y: z.py - 18,
+      vx: Math.cos(z.facing) * 460, vy: Math.sin(z.facing) * 460,
+      life: d.range / 460 + 0.1, dmg, crit, color: '#9d7bff',
     });
-    grantXp(st, 'sorcery', 2);
+    burst(z, z.px + Math.cos(z.facing) * 18, z.py + Math.sin(z.facing) * 18, 5, '#9d7bff',
+      { speed: 60, size: 2.5, life: 0.3, up: 18 });
+    if (grantXp(st, 'sorcery', 3)) levelBurst(z, 'sorcery');
+    xpPopup(z, 'sorcery', 3);
     return;
   }
 
-  z.slashes.push({ x: z.px, y: z.py, ang: z.facing, t: 0, range: d.range });
-  const arc = d.attackStyle === 'thrust' ? 0.5 : 1.5;
-  let hitSomething = false;
+  const arc = d.attackStyle === 'thrust' ? 0.55 : 1.35;
+  z.slashes.push({ x: z.px, y: z.py, ang: z.facing, t: 0, range: d.range, arc });
+  let hitMobs = 0;
 
   for (const m of z.mobs) {
     if (m.state === 'dead') continue;
@@ -196,9 +262,9 @@ export function playerAttack(z: Zone, st: GameState): void {
     const ang = Math.atan2(dy, dx);
     if (Math.abs(angDiff(ang, z.facing)) > arc) continue;
     const crit = Math.random() < d.crit;
-    const dmg = d.atk * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1);
-    damageMob(z, st, m, dmg, crit);
-    hitSomething = true;
+    const dmg = d.atk * famMult(md, d) * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1);
+    damageMob(z, st, m, dmg, crit, z.facing, 190);
+    hitMobs++;
   }
 
   // Harvesting is the same swing, just against wood and stone.
@@ -206,23 +272,37 @@ export function playerAttack(z: Zone, st: GameState): void {
   for (const n of z.nodes) {
     if (n.respawn > 0) continue;
     const dist = Math.hypot(n.x - z.px, n.y - z.py);
-    if (dist > d.range + 20) continue;
+    if (dist > d.range + 22) continue;
     const ang = Math.atan2(n.y - z.py, n.x - z.px);
     if (Math.abs(angDiff(ang, z.facing)) > arc) continue;
     const isTree = n.kind === 'tree';
     const tool = isTree ? 'axe' : 'pickaxe';
     const bonus = wdef?.defId === tool ? 2.2 : 1;
-    const skill = isTree ? skillLevel(st, 'woodcutting') : skillLevel(st, 'mining');
-    const dmg = (6 + d.atk * 0.5 + skill * 1.2) * bonus;
+    const skillMult = isTree ? d.chopMult : d.mineMult;
+    const dmg = (7 + d.atk * 0.45) * bonus * skillMult;
     n.hp -= dmg;
-    n.hitFlash = 0.12;
-    hitSomething = true;
-    grantXp(st, isTree ? 'woodcutting' : 'mining', 3);
-    popup(z, n.x, n.y - 20, '-' + Math.round(dmg), '#d9cf9a');
+    n.hitFlash = 0.1;
+    n.shakeT = 0.18;
+    z.hitstop = Math.max(z.hitstop, 0.02);
+    shakeIt(z, 1.6);
+    burst(z, n.x, n.y - 18, 5, isTree ? '#6b4a2a' : '#9a9ea6',
+      { speed: 90, size: 2.6, life: 0.4, up: 16 });
+    const key: SkillKey = isTree ? 'woodcutting' : 'mining';
+    if (grantXp(st, key, 4)) levelBurst(z, key);
+    xpPopup(z, key, 4);
     if (n.hp <= 0) harvestNode(z, st, n);
   }
 
-  if (hitSomething) grantXp(st, 'blade', 2);
+  if (hitMobs > 0) {
+    if (grantXp(st, 'blade', 3)) levelBurst(z, 'blade');
+    xpPopup(z, 'blade', 3);
+  }
+}
+
+export function levelBurst(z: Zone, k: SkillKey): void {
+  burst(z, z.px, z.py - 20, 26, SKILL_COLOR[k], { speed: 150, size: 3.4, life: 0.8, up: 20, grav: 120 });
+  popup(z, z.px, z.py - 62, SKILL_NAMES[k].toUpperCase() + ' UP', SKILL_COLOR[k], 17, 1.6);
+  shakeIt(z, 3);
 }
 
 function harvestNode(z: Zone, st: GameState, n: Node): void {
@@ -231,29 +311,50 @@ function harvestNode(z: Zone, st: GameState, n: Node): void {
   let roll = Math.random() / Math.max(0.3, d.luckMult);
   let picked = table[0][0];
   for (const [id, w] of table) { roll -= w; if (roll <= 0) { picked = id; break; } }
-  const skill = n.kind === 'tree' ? skillLevel(st, 'woodcutting') : skillLevel(st, 'mining');
-  const qty = 1 + (Math.random() < skill * 0.03 ? 1 : 0);
+  const skill: SkillKey = n.kind === 'tree' ? 'woodcutting' : 'mining';
+  const lvl = skillLevel(st, skill);
+  const qty = 1 + (Math.random() < lvl * 0.03 ? 1 : 0);
   dropItem(z, n.x, n.y, makeItem(rng, picked, 'common', qty), rng);
-  grantXp(st, n.kind === 'tree' ? 'woodcutting' : 'mining', 22);
+  if (grantXp(st, skill, 26)) levelBurst(z, skill);
+  xpPopup(z, skill, 26);
   if (n.kind === 'tree') st.lifetime.treesFelled++; else st.lifetime.rocksMined++;
+  burst(z, n.x, n.y - 24, 18, n.kind === 'tree' ? '#4d7c3c' : '#8a8d96',
+    { speed: 150, size: 3.2, life: 0.7, up: 26 });
+  shakeIt(z, 4);
+  z.hitstop = Math.max(z.hitstop, 0.05);
   n.respawn = 22 + Math.random() * 18;
   n.hp = n.maxHp;
 
   const q = st.active;
   if (q && (q.kind === 'chop' || q.kind === 'mine') && q.target === picked && q.zoneId === z.def.id) {
     q.have = Math.min(q.need, q.have + qty);
-    popup(z, n.x, n.y - 36, q.have + '/' + q.need, '#f0d67a');
+    popup(z, n.x, n.y - 40, q.have + '/' + q.need, '#f0d67a', 14);
   }
 }
 
-export function damageMob(z: Zone, st: GameState, m: Mob, raw: number, crit: boolean): void {
+export function damageMob(
+  z: Zone, st: GameState, m: Mob, raw: number, crit: boolean,
+  fromAngle: number, knockback: number,
+): void {
   const md = MONSTERS[m.defId];
   const dmg = Math.max(1, raw - md.armor * 0.5);
   m.hp -= dmg;
-  m.hitFlash = 0.15;
+  m.hitFlash = 0.16;
   m.aggroed = true;
-  m.state = 'chase';
-  popup(z, m.x, m.y - md.size - 8, (crit ? '!' : '') + Math.round(dmg), crit ? '#ffd166' : '#fff1e0');
+  if (m.state === 'idle') m.state = 'chase';
+  const kbScale = md.family === 'boss' ? 0.22 : 1;
+  m.kbx += Math.cos(fromAngle) * knockback * kbScale;
+  m.kby += Math.sin(fromAngle) * knockback * kbScale;
+  m.stun = Math.max(m.stun, crit ? 0.22 : 0.1);
+
+  popup(z, m.x, m.y - md.size - 10, Math.round(dmg) + (crit ? '!' : ''),
+    crit ? '#ffd166' : '#fff1e0', crit ? 20 : 13 + Math.min(8, dmg / 8));
+  burst(z, m.x, m.y - md.size * 0.7, crit ? 12 : 6, crit ? '#ffd166' : '#ffb4a2',
+    { speed: crit ? 200 : 130, size: crit ? 3.4 : 2.6, life: 0.35, up: md.size });
+
+  z.hitstop = Math.max(z.hitstop, crit ? 0.085 : 0.045);
+  shakeIt(z, crit ? 6 : 2.6);
+
   if (m.hp <= 0) killMob(z, st, m);
 }
 
@@ -263,27 +364,56 @@ function killMob(z: Zone, st: GameState, m: Mob): void {
   m.dead = 0;
   st.lifetime.kills++;
   const d = derived(st);
-  grantXp(st, md.skill, md.xp);
-  grantXp(st, 'vigor', Math.round(md.xp * 0.25));
 
-  const gold = Math.round((md.gold[0] + Math.random() * (md.gold[1] - md.gold[0])) * (st.hero.trait.id === 'cursed' ? 1.6 : 1));
+  const skill: SkillKey = md.skill;
+  if (grantXp(st, skill, md.xp)) levelBurst(z, skill);
+  xpPopup(z, skill, md.xp);
+  const vig = Math.round(md.xp * 0.25);
+  if (grantXp(st, 'vigor', vig)) levelBurst(z, 'vigor');
+
+  const gold = Math.round(
+    (md.gold[0] + Math.random() * (md.gold[1] - md.gold[0])) *
+    d.goldMult * (st.hero.trait.id === 'cursed' ? 1.6 : 1),
+  );
   st.gold += gold;
   st.lifetime.goldEarned += gold;
-  popup(z, m.x, m.y - md.size, '+' + gold + 'g', '#f5c542');
+  popup(z, m.x + 18, m.y - md.size, '+' + gold + 'g', '#f5c542', 13);
 
+  burst(z, m.x, m.y - md.size * 0.6, md.family === 'boss' ? 60 : 20, md.color,
+    { speed: md.family === 'boss' ? 300 : 190, size: 4, life: 0.8, up: md.size });
+  z.hitstop = Math.max(z.hitstop, md.family === 'boss' ? 0.3 : 0.09);
+  shakeIt(z, md.family === 'boss' ? 16 : 5);
+  z.killGlow = 0.25;
+
+  const beastBonus = md.family === 'beast' ? skillLevel(st, 'hunting') * 0.03 : 0;
   for (const [defId, chance] of md.drops) {
-    if (Math.random() < chance * d.luckMult) dropItem(z, m.x, m.y, makeItem(rng, defId, 'common', 1), rng);
+    if (Math.random() < chance * d.luckMult + beastBonus) {
+      dropItem(z, m.x, m.y, makeItem(rng, defId, 'common', 1), rng);
+    }
   }
   if (Math.random() < md.gearChance * d.luckMult) {
-    dropItem(z, m.x, m.y, makeItem(rng, gearForFamily(md)), rng);
+    const it = makeItem(rng, gearForFamily(md));
+    dropItem(z, m.x, m.y, it, rng);
+    if (it.rarity !== 'common' && it.rarity !== 'uncommon') {
+      popup(z, m.x, m.y - md.size - 30, it.rarity.toUpperCase() + '!', '#ffd166', 16, 1.8);
+      shakeIt(z, 7);
+    }
   }
 
   const q = st.active;
   if (q && (q.kind === 'kill' || q.kind === 'boss') && q.target === m.defId && q.zoneId === z.def.id) {
     q.have = Math.min(q.need, q.have + 1);
-    popup(z, m.x, m.y - md.size - 26, q.have + '/' + q.need, '#f0d67a');
+    popup(z, m.x, m.y - md.size - 32, q.have + '/' + q.need, '#f0d67a', 15);
     if (q.have >= q.need) pushLog(st, 'Objective complete. Report to the guild.', 'good');
   }
+}
+
+function dropItem(z: Zone, x: number, y: number, item: Item, r: RNG): void {
+  z.drops.push({
+    uid: uid(), item,
+    x: x + r.float(-16, 16), y: y + r.float(-16, 16),
+    t: 0, vz: 110, z: 26,
+  });
 }
 
 const GEAR_BY_FAMILY: Record<string, string[]> = {
@@ -305,38 +435,132 @@ function angDiff(a: number, b: number): number {
   return d;
 }
 
-// --------------------------------------------------------------------- tick
+// ---------------------------------------------------------------------- dash
+
+export function tryDash(z: Zone, st: GameState, mx: number, my: number): boolean {
+  const d = derived(st);
+  if (z.dashT > 0) return false;
+  if (z.dashCharges <= 0) {
+    popup(z, z.px, z.py - 50, 'winded', '#8fa8c0', 11, 0.6);
+    return false;
+  }
+  if (st.stamina < d.dash.staminaCost) {
+    popup(z, z.px, z.py - 50, 'no stamina', '#8fa8c0', 11, 0.6);
+    return false;
+  }
+  const len = Math.hypot(mx, my);
+  const dx = len > 0.01 ? mx / len : Math.cos(z.facing);
+  const dy = len > 0.01 ? my / len : Math.sin(z.facing);
+
+  z.dashCharges--;
+  st.stamina -= d.dash.staminaCost;
+  z.dashT = d.dash.duration;
+  z.dashDirX = dx; z.dashDirY = dy;
+  z.iframes = Math.max(z.iframes, d.dash.iframes);
+  z.facing = Math.atan2(dy, dx);
+  if (d.dash.momentum) z.momentumT = 2;
+
+  burst(z, z.px, z.py, 12, '#cfd8e8', { speed: 110, size: 2.6, life: 0.35, up: 8, grav: 60 });
+  shakeIt(z, d.dash.blink ? 5 : 2);
+  if (grantXp(st, 'footwork', 6)) levelBurst(z, 'footwork');
+  xpPopup(z, 'footwork', 6);
+  return true;
+}
+
+// ---------------------------------------------------------------------- tick
 
 export function tickZone(
-  z: Zone, st: GameState, dt: number,
+  z: Zone, st: GameState, dtRaw: number,
   input: { mx: number; my: number; attack: boolean },
   ev: ZoneEvents,
 ): void {
-  z.time += dt;
+  // Hit stop: freeze the world for a few frames on impact. Most of the punch is here.
+  let dt = dtRaw;
+  if (z.hitstop > 0) {
+    z.hitstop = Math.max(0, z.hitstop - dtRaw);
+    dt = dtRaw * 0.06;
+  }
+  z.time += dtRaw;
+  z.shake *= Math.pow(0.0016, dtRaw);
+  z.killGlow = Math.max(0, z.killGlow - dtRaw * 2);
+
   const d = derived(st);
   const W = z.def.w * TS, H = z.def.h * TS;
 
   // ---- player movement
-  const len = Math.hypot(input.mx, input.my);
-  if (len > 0.01) {
-    const nx = input.mx / len, ny = input.my / len;
-    z.px = clamp(z.px + nx * d.speed * dt, 20, W - 20);
-    z.py = clamp(z.py + ny * d.speed * dt, 20, H - 20);
-    z.facing = Math.atan2(ny, nx);
-  }
+  let speed = d.speed;
+  if (z.momentumT > 0) { z.momentumT -= dt; speed *= 1.35; }
 
+  if (z.dashT > 0) {
+    z.dashT -= dt;
+    const ds = d.speed * d.dash.speed;
+    z.px = clamp(z.px + z.dashDirX * ds * dt, 20, W - 20);
+    z.py = clamp(z.py + z.dashDirY * ds * dt, 20, H - 20);
+    // afterimages, not a smear: one every few frames reads as speed
+    const lastT = z.dashTrail[z.dashTrail.length - 1];
+    if (!lastT || Math.hypot(lastT.x - z.px, lastT.y - z.py) > 16) {
+      z.dashTrail.push({ x: z.px, y: z.py, t: 0 });
+    }
+    if (d.dash.bullRush) {
+      for (const m of z.mobs) {
+        if (m.state === 'dead' || m.stun > 0.3) continue;
+        const md = MONSTERS[m.defId];
+        if (Math.hypot(m.x - z.px, m.y - z.py) < md.size + 20) {
+          damageMob(z, st, m, d.atk * 0.5 * famMult(md, d), false,
+            Math.atan2(z.dashDirY, z.dashDirX), 340);
+        }
+      }
+    }
+  } else {
+    const len = Math.hypot(input.mx, input.my);
+    if (len > 0.01) {
+      const nx = input.mx / len, ny = input.my / len;
+      z.px = clamp(z.px + nx * speed * dt, 20, W - 20);
+      z.py = clamp(z.py + ny * speed * dt, 20, H - 20);
+      // footwork trains by covering ground
+      if (Math.random() < dt * 0.9) grantXp(st, 'footwork', 1);
+    }
+  }
+  for (const t of z.dashTrail) t.t += dtRaw;
+  z.dashTrail = z.dashTrail.filter((t) => t.t < 0.3);
+
+  z.iframes = Math.max(0, z.iframes - dt);
   z.atkCd = Math.max(0, z.atkCd - dt);
-  z.swingT = Math.max(0, z.swingT - dt);
-  z.hurtT = Math.max(0, z.hurtT - dt);
+  z.swingT = Math.max(0, z.swingT - dtRaw);
+  z.hurtT = Math.max(0, z.hurtT - dtRaw);
   if (input.attack) playerAttack(z, st);
 
-  // ---- regen
+  // ---- dash charges refill one at a time
+  if (z.dashCharges < d.dash.charges) {
+    z.dashRecharge += dt;
+    if (z.dashRecharge >= d.dash.cooldown) {
+      z.dashRecharge = 0;
+      z.dashCharges++;
+    }
+  } else {
+    z.dashRecharge = 0;
+  }
+
+  // ---- resources
   st.mana = Math.min(d.maxMana, st.mana + dt * (1.6 + d.stats.int * 0.12));
+  st.stamina = Math.min(d.maxStamina, st.stamina + dt * d.staminaRegen);
 
   // ---- mobs
   for (const m of z.mobs) {
     m.hitFlash = Math.max(0, m.hitFlash - dt);
-    if (m.state === 'dead') { m.dead += dt; continue; }
+    m.stun = Math.max(0, m.stun - dt);
+
+    // knockback decays fast; it is punctuation, not physics
+    if (Math.abs(m.kbx) > 1 || Math.abs(m.kby) > 1) {
+      m.x = clamp(m.x + m.kbx * dt, 16, W - 16);
+      m.y = clamp(m.y + m.kby * dt, 16, H - 16);
+      const decay = Math.pow(0.0009, dt);
+      m.kbx *= decay; m.kby *= decay;
+    }
+
+    if (m.state === 'dead') { m.dead += dtRaw; continue; }
+    if (m.stun > 0) continue;
+
     const md = MONSTERS[m.defId];
     const dx = z.px - m.x, dy = z.py - m.y;
     const dist = Math.hypot(dx, dy);
@@ -365,15 +589,23 @@ export function tickZone(
       if (m.windup > 0) {
         m.windup -= dt;
         if (m.windup <= 0) {
-          // land the blow if the player is still there
           if (Math.hypot(z.px - m.x, z.py - m.y) < md.attackRange + 14) {
-            const raw = md.atk * (0.85 + Math.random() * 0.3);
-            const dmg = Math.max(1, raw - d.armor * 0.55);
-            st.hp -= dmg;
-            z.hurtT = 0.22;
-            popup(z, z.px, z.py - 30, '-' + Math.round(dmg), '#ff6b6b');
-            grantXp(st, 'vigor', Math.round(dmg * 0.6));
-            if (st.hp <= 0) { ev.onDeath(md.name); return; }
+            if (z.iframes > 0) {
+              popup(z, z.px, z.py - 44, 'dodged', '#9fe0c0', 13, 0.8);
+              if (grantXp(st, 'footwork', 12)) levelBurst(z, 'footwork');
+              xpPopup(z, 'footwork', 12);
+            } else {
+              const raw = md.atk * (0.85 + Math.random() * 0.3);
+              const dmg = Math.max(1, raw - d.armor * 0.55);
+              st.hp -= dmg;
+              z.hurtT = 0.26;
+              shakeIt(z, 7);
+              z.hitstop = Math.max(z.hitstop, 0.06);
+              popup(z, z.px, z.py - 38, '-' + Math.round(dmg), '#ff6b6b', 16);
+              burst(z, z.px, z.py - 18, 10, '#c8352c', { speed: 150, size: 3, life: 0.4, up: 16 });
+              if (grantXp(st, 'vigor', Math.round(dmg * 0.6))) levelBurst(z, 'vigor');
+              if (st.hp <= 0) { ev.onDeath(md.name); return; }
+            }
           }
         }
       } else if (dist > md.attackRange) {
@@ -381,11 +613,10 @@ export function tickZone(
         m.y += (dy / dist) * md.speed * dt;
       } else if (m.cd <= 0) {
         m.cd = md.attackCd;
-        m.windup = 0.35;
+        m.windup = 0.38;
       }
     }
 
-    // crude separation so mobs do not stack into one pixel
     for (const o of z.mobs) {
       if (o === m || o.state === 'dead') continue;
       const ox = m.x - o.x, oy = m.y - o.y;
@@ -399,28 +630,34 @@ export function tickZone(
   }
   z.mobs = z.mobs.filter((m) => m.state !== 'dead' || m.dead < 1.2);
 
-  // ---- respawn pressure keeps the zone alive
   const alive = z.mobs.filter((m) => m.state !== 'dead').length;
   if (alive < z.def.density && Math.random() < dt * 0.35) {
     const m = spawnMob(z, rng, pickSpawn(rng, z.def));
-    // never pop in on top of the player
     if (Math.hypot(m.x - z.px, m.y - z.py) < 420) { m.x = Math.random() * W; m.y = Math.random() * H; }
   }
 
   // ---- nodes
   for (const n of z.nodes) {
     n.hitFlash = Math.max(0, n.hitFlash - dt);
-    if (n.respawn > 0) n.respawn -= dt;
+    n.shakeT = Math.max(0, n.shakeT - dtRaw);
+    if (n.respawn > 0) n.respawn -= dtRaw;
   }
 
   // ---- projectiles
   for (const p of z.projectiles) {
     p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+    if (Math.random() < dt * 40) {
+      z.particles.push({
+        x: p.x, y: p.y, z: 0, vx: 0, vy: 0, vz: 0,
+        life: 0, maxLife: 0.25, color: p.color, size: 3, grav: 0,
+      });
+    }
     for (const m of z.mobs) {
       if (m.state === 'dead') continue;
       const md = MONSTERS[m.defId];
-      if (Math.hypot(m.x - p.x, m.y - p.y) < md.size + 8) {
-        damageMob(z, st, m, p.dmg, p.crit);
+      if (Math.hypot(m.x - p.x, m.y - p.y) < md.size + 9) {
+        damageMob(z, st, m, p.dmg * famMult(md, d), p.crit, Math.atan2(p.vy, p.vx), 140);
+        burst(z, p.x, p.y, 10, p.color, { speed: 150, size: 3, life: 0.4, up: 0, grav: 0 });
         p.life = 0;
         break;
       }
@@ -428,34 +665,51 @@ export function tickZone(
   }
   z.projectiles = z.projectiles.filter((p) => p.life > 0);
 
-  // ---- slashes
-  for (const s of z.slashes) s.t += dt;
-  z.slashes = z.slashes.filter((s) => s.t < 0.22);
+  for (const s of z.slashes) s.t += dtRaw;
+  z.slashes = z.slashes.filter((s) => s.t < 0.24);
 
-  // ---- drops: hop, settle, then get vacuumed up
+  // ---- particles
+  for (const p of z.particles) {
+    p.life += dtRaw;
+    p.x += p.vx * dtRaw;
+    p.y += p.vy * dtRaw;
+    p.z = Math.max(0, p.z + p.vz * dtRaw);
+    p.vz -= p.grav * dtRaw;
+    p.vx *= Math.pow(0.05, dtRaw);
+    p.vy *= Math.pow(0.05, dtRaw);
+  }
+  z.particles = z.particles.filter((p) => p.life < p.maxLife);
+  if (z.particles.length > 500) z.particles.splice(0, z.particles.length - 500);
+
+  // ---- drops: magnetise, then pick up
   for (const dr of z.drops) {
-    dr.t += dt;
-    dr.vz -= 320 * dt;
-    dr.z = Math.max(0, dr.z + dr.vz * dt);
+    dr.t += dtRaw;
+    dr.vz -= 340 * dtRaw;
+    dr.z = Math.max(0, dr.z + dr.vz * dtRaw);
     if (dr.z <= 0) dr.vz = 0;
-    if (dr.t > 0.4 && Math.hypot(dr.x - z.px, dr.y - z.py) < 34) {
+    const dist = Math.hypot(dr.x - z.px, dr.y - z.py);
+    if (dr.t > 0.45 && dist < 90) {
+      const pull = 1 - dist / 90;
+      dr.x += (z.px - dr.x) * pull * 8 * dtRaw;
+      dr.y += (z.py - dr.y) * pull * 8 * dtRaw;
+    }
+    if (dr.t > 0.45 && dist < 26) {
       if (autoPlace(st.bag, dr.item)) {
-        popup(z, z.px, z.py - 40, dr.item.name, '#cfe8b0');
+        popup(z, z.px, z.py - 54, dr.item.name, '#cfe8b0', 12, 1);
+        burst(z, z.px, z.py - 14, 5, ITEM_DEFS[dr.item.defId].color,
+          { speed: 60, size: 2.4, life: 0.3, up: 12 });
         dr.t = -999;
-        const q = st.active;
-        if (q && (q.kind === 'chop' || q.kind === 'mine') && q.target === dr.item.defId) { /* counted at harvest */ }
-      } else if (z.time % 1 < dt) {
-        popup(z, z.px, z.py - 40, 'bag full', '#ff9c6b');
+      } else if (z.time % 1.2 < dtRaw) {
+        popup(z, z.px, z.py - 54, 'pack is full', '#ff9c6b', 12, 1);
       }
     }
   }
   z.drops = z.drops.filter((dr) => dr.t > -900);
 
   // ---- popups
-  for (const p of z.popups) { p.t += dt; p.y += p.vy * dt; p.vy += 42 * dt; }
-  z.popups = z.popups.filter((p) => p.t < 1.1);
+  for (const p of z.popups) { p.t += dtRaw; p.y += p.vy * dtRaw; p.vy += 52 * dtRaw; }
+  z.popups = z.popups.filter((p) => p.t < p.life);
 
-  // ---- exit: stepping on the pad only offers the road, it does not take it
   z.nearExit = Math.hypot(z.px - z.exitX, z.py - z.exitY) < 58;
   void ev;
 }

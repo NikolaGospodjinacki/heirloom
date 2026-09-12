@@ -1,4 +1,4 @@
-import type { Item, ItemDef, Rarity, Shape, ItemMods } from './types';
+import type { EquipSlot, Item, ItemDef, Rarity, Shape, ItemMods } from './types';
 import { RARITY_MULT } from './types';
 import { RNG, uid } from './rng';
 
@@ -17,41 +17,41 @@ export const ITEM_DEFS: Record<string, ItemDef> = {};
 function def(d: ItemDef) { ITEM_DEFS[d.defId] = d; return d; }
 
 // ---------------------------------------------------------------- weapons
-def({ defId: 'shortsword', name: 'Shortsword', kind: 'weapon', shape: S.v3, tier: 1, baseValue: 26, color: '#c9ccd6',
+def({ defId: 'shortsword', slot: 'weapon', visual: 'sword', name: 'Shortsword', kind: 'weapon', shape: S.v3, tier: 1, baseValue: 26, color: '#c9ccd6',
   attack: 'swing', mods: { atk: 7, range: 34, attackSpeed: 1 }, desc: 'Honest steel.' });
-def({ defId: 'dagger', name: 'Dagger', kind: 'weapon', shape: S.v2, tier: 1, baseValue: 18, color: '#d6d2c4',
+def({ defId: 'dagger', slot: 'weapon', visual: 'dagger', name: 'Dagger', kind: 'weapon', shape: S.v2, tier: 1, baseValue: 18, color: '#d6d2c4',
   attack: 'thrust', mods: { atk: 4, range: 26, attackSpeed: 1.6, critChance: 0.1 }, desc: 'Quick and mean.' });
-def({ defId: 'greatsword', name: 'Greatsword', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 70, color: '#aeb6c4',
+def({ defId: 'greatsword', slot: 'weapon', visual: 'greatsword', name: 'Greatsword', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 70, color: '#aeb6c4',
   attack: 'swing', mods: { atk: 16, range: 44, attackSpeed: 0.62 }, desc: 'Takes both hands and a grudge.' });
-def({ defId: 'axe', name: 'Woodsman Axe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#b98a52',
+def({ defId: 'axe', slot: 'weapon', visual: 'axe', name: 'Woodsman Axe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#b98a52',
   attack: 'swing', mods: { atk: 9, range: 32, attackSpeed: 0.85 }, desc: 'Fells trees twice as fast.' });
-def({ defId: 'pickaxe', name: 'Pickaxe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#8d94a3',
+def({ defId: 'pickaxe', slot: 'weapon', visual: 'pick', name: 'Pickaxe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#8d94a3',
   attack: 'swing', mods: { atk: 6, range: 30, attackSpeed: 0.9 }, desc: 'Bites stone twice as fast.' });
-def({ defId: 'apprentice_staff', name: 'Apprentice Staff', kind: 'weapon', shape: S.v3, tier: 1, baseValue: 30, color: '#8f6ac2',
+def({ defId: 'apprentice_staff', slot: 'weapon', visual: 'staff', name: 'Apprentice Staff', kind: 'weapon', shape: S.v3, tier: 1, baseValue: 30, color: '#8f6ac2',
   attack: 'bolt', mods: { atk: 3, spellPower: 8, range: 190, attackSpeed: 0.9 }, desc: 'Hums when it rains.' });
-def({ defId: 'runewood_staff', name: 'Runewood Staff', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 82, color: '#6f4fd6',
+def({ defId: 'runewood_staff', slot: 'weapon', visual: 'staff', name: 'Runewood Staff', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 82, color: '#6f4fd6',
   attack: 'bolt', mods: { atk: 4, spellPower: 17, range: 220, attackSpeed: 0.85 }, desc: 'Old words, still angry.' });
-def({ defId: 'wand', name: 'Hazel Wand', kind: 'weapon', shape: S.v2, tier: 1, baseValue: 22, color: '#a37ddb',
+def({ defId: 'wand', slot: 'weapon', visual: 'wand', name: 'Hazel Wand', kind: 'weapon', shape: S.v2, tier: 1, baseValue: 22, color: '#a37ddb',
   attack: 'bolt', mods: { atk: 2, spellPower: 5, range: 165, attackSpeed: 1.5 }, desc: 'Chatty little thing.' });
 
 // ---------------------------------------------------------------- armour
-def({ defId: 'buckler', name: 'Buckler', kind: 'offhand', shape: S.sq2, tier: 1, baseValue: 28, color: '#8a6f4a',
+def({ defId: 'buckler', slot: 'offhand', visual: 'shield_small', name: 'Buckler', kind: 'offhand', shape: S.sq2, tier: 1, baseValue: 28, color: '#8a6f4a',
   mods: { armor: 4, hp: 8 } });
-def({ defId: 'kite_shield', name: 'Kite Shield', kind: 'offhand', shape: S.rect23, tier: 2, baseValue: 64, color: '#6c7f9c',
+def({ defId: 'kite_shield', slot: 'offhand', visual: 'shield_tall', name: 'Kite Shield', kind: 'offhand', shape: S.rect23, tier: 2, baseValue: 64, color: '#6c7f9c',
   mods: { armor: 10, hp: 22, speed: -6 } });
-def({ defId: 'leather_cap', name: 'Leather Cap', kind: 'head', shape: S.h2, tier: 1, baseValue: 16, color: '#8b6239',
+def({ defId: 'leather_cap', slot: 'head', visual: 'cap', name: 'Leather Cap', kind: 'head', shape: S.h2, tier: 1, baseValue: 16, color: '#8b6239',
   mods: { armor: 2, hp: 6 } });
-def({ defId: 'iron_helm', name: 'Iron Helm', kind: 'head', shape: S.sq2, tier: 2, baseValue: 44, color: '#9aa1ab',
+def({ defId: 'iron_helm', slot: 'head', visual: 'helm', name: 'Iron Helm', kind: 'head', shape: S.sq2, tier: 2, baseValue: 44, color: '#9aa1ab',
   mods: { armor: 6, hp: 14 } });
-def({ defId: 'wizard_hat', name: 'Pointed Hat', kind: 'head', shape: S.ell, tier: 1, baseValue: 24, color: '#5f4a9c',
+def({ defId: 'wizard_hat', slot: 'head', visual: 'hat', name: 'Pointed Hat', kind: 'head', shape: S.ell, tier: 1, baseValue: 24, color: '#5f4a9c',
   mods: { spellPower: 5, hp: 4 } });
-def({ defId: 'padded_tunic', name: 'Padded Tunic', kind: 'body', shape: S.rect23, tier: 1, baseValue: 32, color: '#8f7a5a',
+def({ defId: 'padded_tunic', slot: 'body', visual: 'tunic', name: 'Padded Tunic', kind: 'body', shape: S.rect23, tier: 1, baseValue: 32, color: '#8f7a5a',
   mods: { armor: 5, hp: 18 } });
-def({ defId: 'chainmail', name: 'Chainmail', kind: 'body', shape: S.rect23, tier: 2, baseValue: 88, color: '#98a0ac',
+def({ defId: 'chainmail', slot: 'body', visual: 'mail', name: 'Chainmail', kind: 'body', shape: S.rect23, tier: 2, baseValue: 88, color: '#98a0ac',
   mods: { armor: 13, hp: 34, speed: -8 } });
-def({ defId: 'robe', name: 'Star-Thread Robe', kind: 'body', shape: S.rect23, tier: 2, baseValue: 76, color: '#4b3f8f',
+def({ defId: 'robe', slot: 'body', visual: 'robe', name: 'Star-Thread Robe', kind: 'body', shape: S.rect23, tier: 2, baseValue: 76, color: '#4b3f8f',
   mods: { armor: 3, spellPower: 12, hp: 12 } });
-def({ defId: 'boots', name: 'Travel Boots', kind: 'feet', shape: S.h2, tier: 1, baseValue: 20, color: '#7a5533',
+def({ defId: 'boots', slot: 'feet', visual: 'boots', name: 'Travel Boots', kind: 'feet', shape: S.h2, tier: 1, baseValue: 20, color: '#7a5533',
   mods: { armor: 1, speed: 14 } });
 
 // ---------------------------------------------------------------- trinkets
@@ -218,4 +218,15 @@ export function shapeSize(shape: Shape, rot: number): [number, number] {
 export function isGear(it: Item): boolean {
   const k = ITEM_DEFS[it.defId].kind;
   return k === 'weapon' || k === 'offhand' || k === 'head' || k === 'body' || k === 'feet' || k === 'trinket';
+}
+
+/** Gear that goes in a paper-doll slot rather than loose in the pack. */
+export function slotOf(it: Item): EquipSlot | null {
+  return ITEM_DEFS[it.defId].slot ?? null;
+}
+
+/** Trinkets and gems still work Backpack-Battles style: they count where they sit. */
+export function isAccessory(it: Item): boolean {
+  const k = ITEM_DEFS[it.defId].kind;
+  return k === 'trinket' || k === 'gem';
 }

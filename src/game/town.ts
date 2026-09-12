@@ -1,5 +1,6 @@
 import { TS, shadow } from '../render/view';
 import { drawGround, drawHero, roundRect } from '../render/draw';
+import { gearLook } from '../render/look';
 import type { GameState } from './state';
 import type { Village } from './types';
 
@@ -254,7 +255,9 @@ export function drawTown(
   }
 
   list.push({
-    d: t.py, f: () => drawHero(ctx, t.px, t.py, st.hero.appearance, t.facing, t.walkT),
+    d: t.py,
+    f: () => drawHero(ctx, t.px, t.py, st.hero.appearance, t.facing, t.walkT,
+      { gear: gearLook(st.equipped) }),
   });
 
   list.sort((a, b) => a.d - b.d);

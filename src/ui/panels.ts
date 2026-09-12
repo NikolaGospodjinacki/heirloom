@@ -1,16 +1,21 @@
-import type { Item, SkillKey } from '../game/types';
-import { RARITY_COLOR, SKILL_NAMES, STAT_NAMES } from '../game/types';
-import { ITEM_DEFS, displayName, isGear, itemValue, makeItem } from '../game/items';
+import type { EquipSlot, Item, SkillKey } from '../game/types';
+import {
+  EQUIP_SLOTS, RARITY_COLOR, SKILL_COLOR, SKILL_EFFECT, SKILL_NAMES, STAT_NAMES,
+} from '../game/types';
+import { ITEM_DEFS, displayName, isGear, itemValue, makeItem, slotOf } from '../game/items';
 import { autoPlace, remove, usedCells } from '../game/backpack';
 import { levelProgress } from '../game/bloodline';
 import { ZONES } from '../game/content';
+import { TECHNIQUES, canLearn, techById } from '../game/techniques';
 import {
-  GameState, PLOT_DEFS, RESOURCE_NAMES, clickPlot, completeQuest, derived,
-  refreshBoard, rollShopStock, skillLevel, upgradeCost, workerCost, pushLog,
+  GameState, PLOT_DEFS, RESOURCE_NAMES, clickPlot, completeQuest, derived, equip,
+  refreshBoard, rollShopStock, skillLevel, unequip, upgradeCost, workerCost, pushLog,
 } from '../game/state';
 import { rng } from '../game/rng';
-import { clear, el, fmt, hideTip, toast } from './dom';
-import { GridView, dropZones, itemTooltip } from './grid';
+import { drawHero } from '../render/draw';
+import { gearLook } from '../render/look';
+import { clear, el, fmt, hideTip, showTip, toast } from './dom';
+import { GridView, SlotView, dropZones, itemTooltip } from './grid';
 
 export interface UICtx {
   st: GameState;
@@ -20,19 +25,23 @@ export interface UICtx {
   save: () => void;
 }
 
-export type PanelKind = 'bag' | 'guild' | 'shop' | 'smith' | 'home' | 'char' | 'gate';
+export type PanelKind =
+  | 'bag' | 'char' | 'tech' | 'guild' | 'shop' | 'smith' | 'home' | 'gate';
 
 let liveViews: GridView[] = [];
+let liveSlots: SlotView[] = [];
+let liveLoops: number[] = [];
 let rerender: (() => void) | null = null;
 
 export function closePanel(): void {
   for (const v of liveViews) v.destroy();
-  liveViews = [];
+  for (const s of liveSlots) s.destroy();
+  for (const id of liveLoops) cancelAnimationFrame(id);
+  liveViews = []; liveSlots = []; liveLoops = [];
   dropZones.length = 0;
   rerender = null;
   hideTip();
-  const o = document.getElementById('overlay')!;
-  clear(o);
+  clear(document.getElementById('overlay')!);
 }
 
 export function panelOpen(): boolean {
@@ -46,21 +55,26 @@ export function openPanel(kind: PanelKind, ctx: UICtx): void {
   const host = el('div');
   scrim.append(host);
   overlay.append(scrim);
-  scrim.addEventListener('pointerdown', (e) => { if (e.target === scrim) { closePanel(); ctx.refresh(); } });
+  scrim.addEventListener('pointerdown', (e) => {
+    if (e.target === scrim) { closePanel(); ctx.refresh(); }
+  });
 
   const build = () => {
     for (const v of liveViews) v.destroy();
-    liveViews = [];
+    for (const s of liveSlots) s.destroy();
+    for (const id of liveLoops) cancelAnimationFrame(id);
+    liveViews = []; liveSlots = []; liveLoops = [];
     dropZones.length = 0;
     clear(host);
     let node: HTMLElement;
     switch (kind) {
       case 'bag': node = bagPanel(ctx); break;
+      case 'char': node = charPanel(ctx); break;
+      case 'tech': node = techPanel(ctx); break;
       case 'guild': node = guildPanel(ctx); break;
       case 'shop': node = shopPanel(ctx); break;
       case 'smith': node = smithPanel(ctx); break;
       case 'home': node = homePanel(ctx); break;
-      case 'char': node = charPanel(ctx); break;
       case 'gate': node = gatePanel(ctx); break;
     }
     host.append(node);
@@ -71,8 +85,8 @@ export function openPanel(kind: PanelKind, ctx: UICtx): void {
 
 export function refreshPanel(): void { rerender?.(); }
 
-function shell(title: string, sub: string, body: HTMLElement, width: number, footer?: HTMLElement): HTMLElement {
-  const p = el('div', { class: 'panel', style: 'width:' + width + 'px' });
+function shell(title: string, sub: string, body: HTMLElement, width: number): HTMLElement {
+  const p = el('div', { class: 'panel', style: 'width:min(' + width + 'px, 94vw)' });
   const close = el('button', { class: 'x' }, '✕');
   close.addEventListener('click', () => { closePanel(); });
   p.append(
@@ -81,27 +95,87 @@ function shell(title: string, sub: string, body: HTMLElement, width: number, foo
       close),
     el('div', { class: 'body' }, body),
   );
-  if (footer) p.append(footer);
   return p;
 }
 
-// ------------------------------------------------------------------- BAG
+// ---------------------------------------------------------------- paper doll
 
-function statSide(ctx: UICtx): HTMLElement {
+/** Live-rendering hero preview that reflects whatever is in the slots. */
+function dollCanvas(ctx: UICtx): HTMLCanvasElement {
+  const cv = document.createElement('canvas');
+  const W = 132, H = 210;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  cv.className = 'dollcanvas';
+  const c = cv.getContext('2d')!;
+  const t0 = performance.now();
+  let swingT = 0;
+
+  cv.addEventListener('click', () => { swingT = 0.35; });
+
+  const loop = (now: number) => {
+    const t = (now - t0) / 1000;
+    if (swingT > 0) swingT = Math.max(0, swingT - 1 / 60);
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, W, H);
+    c.save();
+    c.translate(W / 2, H * 0.78);
+    c.scale(2.1, 2.1);
+    // face the viewer, idle bob
+    drawHero(c, 0, 0, ctx.st.hero.appearance, Math.PI / 2, t * 0.8, {
+      gear: gearLook(ctx.st.equipped),
+      swing: swingT, swingMax: 0.35,
+    });
+    c.restore();
+    liveLoops[0] = requestAnimationFrame(loop);
+  };
+  liveLoops.push(requestAnimationFrame(loop));
+  return cv;
+}
+
+function makeSlot(ctx: UICtx, slot: EquipSlot): SlotView {
+  const st = ctx.st;
+  const v = new SlotView({
+    slot,
+    get: () => st.equipped[slot],
+    set: (it) => {
+      if (it === null) { st.equipped[slot] = null; }
+      else if (!equip(st, it)) { toast('No room in the pack for what you are wearing'); return false; }
+      ctx.refresh(); ctx.save();
+      return true;
+    },
+    accepts: (it) => slotOf(it) === slot,
+    onChange: () => { refreshStats(ctx); },
+  });
+  liveSlots.push(v);
+  return v;
+}
+
+let statsHost: HTMLElement | null = null;
+function refreshStats(ctx: UICtx): void {
+  if (!statsHost) return;
+  const fresh = statBlock(ctx);
+  statsHost.replaceWith(fresh);
+  statsHost = fresh;
+}
+
+function statBlock(ctx: UICtx): HTMLElement {
   const st = ctx.st;
   const d = derived(st);
   const box = el('div', { class: 'side' });
-
-  const g = el('div', { class: 'statblock' }, el('h4', {}, 'Loadout'));
+  const g = el('div', { class: 'statblock' }, el('h4', {}, 'In the field'));
   const rows: [string, string][] = [
     ['Attack', String(d.atk)],
-    ['Spell Power', String(d.spellPower)],
+    ['Spell power', String(d.spellPower)],
     ['Armour', String(d.armor)],
-    ['Max Health', String(d.maxHp)],
-    ['Move Speed', String(d.speed)],
+    ['Max health', String(d.maxHp)],
+    ['Move speed', String(d.speed)],
     ['Crit', Math.round(d.crit * 100) + '%'],
-    ['Swing Rate', d.attackSpeed.toFixed(2) + 'x'],
-    ['Weapon', d.weapon ? displayName(d.weapon) : 'bare hands'],
+    ['Swing rate', d.attackSpeed.toFixed(2) + 'x'],
+    ['Dash charges', String(d.dash.charges)],
+    ['vs beasts', '+' + Math.round((d.beastMult - 1) * 100) + '%'],
+    ['vs everything else', '+' + Math.round((d.slayMult - 1) * 100) + '%'],
   ];
   for (const [k, v] of rows) g.append(el('div', { class: 'srow' }, el('span', {}, k), el('b', {}, v)));
   box.append(g);
@@ -114,47 +188,197 @@ function statSide(ctx: UICtx): HTMLElement {
   box.append(s);
 
   const used = usedCells(st.bag);
-  box.append(el('div', { class: 'muted center' },
-    used + ' / ' + (st.bag.w * st.bag.h) + ' cells used'));
-  box.append(el('div', { class: 'muted center' },
-    'Drag to arrange · R rotates · gear only works while it is in the bag'));
+  box.append(el('div', { class: 'muted center' }, used + ' / ' + (st.bag.w * st.bag.h) + ' cells used'));
   return box;
 }
 
+// -------------------------------------------------------------------- BAG
+
 function bagPanel(ctx: UICtx): HTMLElement {
   const st = ctx.st;
-  const wrap = el('div', { class: 'bp-wrap' });
+  const wrap = el('div', { style: 'display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;justify-content:center' });
+
+  // --- paper doll column
+  const doll = el('div', { class: 'doll' });
+  const left = el('div', { style: 'display:flex;flex-direction:column;gap:8px' });
+  const right = el('div', { style: 'display:flex;flex-direction:column;gap:8px' });
+  for (const s of ['head', 'body', 'feet'] as EquipSlot[]) left.append(makeSlot(ctx, s).host);
+  for (const s of ['weapon', 'offhand'] as EquipSlot[]) right.append(makeSlot(ctx, s).host);
+  doll.append(left, el('div', { class: 'cv' }, dollCanvas(ctx)), right);
+
+  const dollCol = el('div', {});
+  dollCol.append(
+    doll,
+    el('div', { class: 'muted center', style: 'margin-top:10px;width:290px' },
+      'Drag gear onto a slot, or double-click it in the pack. Trinkets and gems work from inside the pack.'),
+  );
+
+  // --- pack grid
   const view = new GridView({
     grid: st.bag,
-    onChange: () => { ctx.refresh(); refreshPanel(); },
-    onClickItem: (it, e) => {
-      if (e.detail === 2) useOrToggle(ctx, it);
-    },
+    onChange: () => { ctx.refresh(); refreshStats(ctx); ctx.save(); },
+    onClickItem: (it, e) => { if (e.detail === 2) useOrEquip(ctx, it); },
   });
   liveViews.push(view);
-  wrap.append(view.host, statSide(ctx));
+
+  const gridCol = el('div', {});
+  gridCol.append(
+    el('div', { class: 'muted', style: 'margin-bottom:6px' }, 'PACK'),
+    view.host,
+  );
+
+  statsHost = statBlock(ctx);
+  wrap.append(dollCol, gridCol, statsHost);
   return shell(
-    'Pack',
-    'Everything you own is on your back. Gear must be inside the bag to count.',
-    wrap, 760,
+    'Kit',
+    'What you wear, and what you can carry home. Both die with you.',
+    wrap, 1060,
   );
 }
 
-function useOrToggle(ctx: UICtx, it: Item): void {
+function useOrEquip(ctx: UICtx, it: Item): void {
   const def = ITEM_DEFS[it.defId];
-  if (def.kind !== 'consumable') return;
   const d = derived(ctx.st);
-  if (it.defId === 'healing_draught') {
-    ctx.st.hp = Math.min(d.maxHp, ctx.st.hp + 45);
-    toast('Drank a Healing Draught');
+  if (def.kind === 'consumable') {
+    if (it.defId === 'healing_draught') {
+      ctx.st.hp = Math.min(d.maxHp, ctx.st.hp + 45);
+      toast('Drank a Healing Draught');
+    } else {
+      ctx.st.mana = Math.min(d.maxMana, ctx.st.mana + 40);
+      toast('Drank a Mana Draught');
+    }
+    it.count -= 1;
+    if (it.count <= 0) remove(ctx.st.bag, it.uid);
+  } else if (slotOf(it)) {
+    if (!equip(ctx.st, it)) { toast('No room in the pack for what you are wearing'); return; }
+    toast('Equipped ' + displayName(it));
   } else {
-    ctx.st.mana = Math.min(d.maxMana, ctx.st.mana + 40);
-    toast('Drank a Mana Draught');
+    return;
   }
-  it.count -= 1;
-  if (it.count <= 0) remove(ctx.st.bag, it.uid);
-  ctx.refresh();
+  ctx.refresh(); ctx.save();
   refreshPanel();
+}
+
+// -------------------------------------------------------------- CHARACTER
+
+function skillCard(st: GameState, k: SkillKey): HTMLElement {
+  const p = levelProgress(st.hero.skills[k]?.xp ?? 0);
+  const inherited = st.legacy.legacy[k] ?? 0;
+  const pct = p.need ? (p.into / p.need) * 100 : 0;
+  const card = el('div', { class: 'skillcard' });
+  card.append(
+    el('div', { class: 'top' },
+      el('b', { style: 'color:' + SKILL_COLOR[k] }, SKILL_NAMES[k]),
+      el('span', {}, 'level ' + p.level + '   ' + Math.floor(p.into) + ' / ' + p.need + ' xp')),
+    el('div', { class: 'track', style: 'height:8px;border-radius:5px;background:#16120f;overflow:hidden;margin:6px 0 5px' },
+      el('i', { style: 'display:block;height:100%;width:' + pct + '%;background:' + SKILL_COLOR[k] })),
+    el('div', { class: 'eff', style: 'font-size:11px;color:#8c8069' },
+      'per level: ' + SKILL_EFFECT[k] + (inherited > 0 ? '   ·   inherited ' + fmt(inherited) + ' xp' : '')),
+  );
+  return card;
+}
+
+function charPanel(ctx: UICtx): HTMLElement {
+  const st = ctx.st;
+  const d = derived(st);
+  const body = el('div', { style: 'display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap' });
+
+  const leftCol = el('div', { style: 'width:330px;flex:none' });
+  leftCol.append(el('div', { class: 'statblock' },
+    el('h4', {}, 'Bloodline'),
+    el('div', { class: 'srow' }, el('span', {}, 'Name'), el('b', {}, st.hero.name)),
+    el('div', { class: 'srow' }, el('span', {}, 'Calling'), el('b', {}, st.hero.classId)),
+    el('div', { class: 'srow' }, el('span', {}, 'Generation'), el('b', {}, String(st.generation))),
+    el('div', { class: 'srow' }, el('span', {}, 'Blood bonus'), el('b', {}, '+' + st.legacy.bloodlineBonus + ' to every stat')),
+    el('div', { class: 'srow' }, el('span', {}, 'Memory'), el('b', { style: 'color:#8fc2e0' }, String(st.memory))),
+    el('div', { class: 'sep' }),
+    el('div', { style: 'font-weight:700;color:' + (st.hero.trait.good ? '#8fd07a' : '#e0a25a') }, st.hero.trait.name),
+    el('div', { class: 'muted' }, st.hero.trait.desc),
+  ));
+
+  const stats = el('div', { class: 'statblock', style: 'margin-top:12px' }, el('h4', {}, 'Attributes'));
+  for (const [k, name] of Object.entries(STAT_NAMES)) {
+    stats.append(el('div', { class: 'srow' }, el('span', {}, name),
+      el('b', {}, String(d.stats[k as keyof typeof d.stats]))));
+  }
+  leftCol.append(stats);
+
+  const life = el('div', { class: 'statblock', style: 'margin-top:12px' }, el('h4', {}, 'This life'));
+  const L: [string, string][] = [
+    ['Kills', String(st.lifetime.kills)],
+    ['Contracts', String(st.lifetime.questsDone)],
+    ['Trees felled', String(st.lifetime.treesFelled)],
+    ['Rocks broken', String(st.lifetime.rocksMined)],
+    ['Gold earned', fmt(st.lifetime.goldEarned)],
+    ['Minutes alive', String(Math.round((Date.now() - st.lifetime.born) / 60000))],
+  ];
+  for (const [k, v] of L) life.append(el('div', { class: 'srow' }, el('span', {}, k), el('b', {}, v)));
+  leftCol.append(life);
+
+  if (st.epitaphs.length) {
+    const graves = el('div', { class: 'statblock', style: 'margin-top:12px' }, el('h4', {}, 'The graves'));
+    for (const e of st.epitaphs.slice(0, 6)) {
+      graves.append(el('div', { class: 'muted', style: 'padding:3px 0' },
+        'Gen ' + e.gen + ' · ' + e.name + ' — killed by ' + e.cause + ' (' + e.kills + ' kills)'));
+    }
+    leftCol.append(graves);
+  }
+
+  const right = el('div', { style: 'flex:1;min-width:340px' });
+  right.append(el('h4', { style: 'margin:0 0 4px;font-size:11px;letter-spacing:.1em;color:#8c8069' },
+    'SKILLS'));
+  right.append(el('div', { class: 'muted', style: 'margin-bottom:12px' },
+    'You get better at what you actually do. A quarter of every skill passes to your heir.'));
+  for (const k of Object.keys(SKILL_NAMES) as SkillKey[]) right.append(skillCard(st, k));
+
+  body.append(leftCol, right);
+  return shell('Character', st.hero.name + ', generation ' + st.generation, body, 880);
+}
+
+// -------------------------------------------------------------- TECHNIQUES
+
+function techPanel(ctx: UICtx): HTMLElement {
+  const st = ctx.st;
+  const body = el('div');
+  body.append(el('div', { class: 'muted', style: 'margin-bottom:14px' },
+    'Movement is not equipment. What one of your name learns to do with their feet, the next one is born knowing. ' +
+    'Memory is earned by living a life worth remembering and spent by whoever comes after.'));
+
+  const tiers = Math.max(...TECHNIQUES.map((t) => t.tier)) + 1;
+  const tree = el('div', { class: 'tree' });
+  for (let i = 0; i < tiers; i++) {
+    const col = el('div', { class: 'treecol' });
+    for (const t of TECHNIQUES.filter((x) => x.tier === i)) {
+      const known = st.techniques.includes(t.id);
+      const able = canLearn(st.techniques, st.memory, t);
+      const card = el('div', { class: 'tech ' + (known ? 'known' : able ? 'able' : 'locked') });
+      card.append(
+        el('div', { class: 'cost' + (known ? ' have' : '') }, known ? 'known' : t.cost + ' mem'),
+        el('b', {}, t.name),
+        el('p', {}, t.desc),
+      );
+      if (!known && t.requires.length) {
+        const missing = t.requires.filter((r) => !st.techniques.includes(r));
+        if (missing.length) {
+          card.append(el('div', { class: 'muted', style: 'margin-top:6px;font-size:10.5px' },
+            'needs ' + missing.map((m) => techById(m)?.name ?? m).join(', ')));
+        }
+      }
+      if (able) {
+        card.addEventListener('click', () => {
+          st.memory -= t.cost;
+          st.techniques.push(t.id);
+          pushLog(st, 'Learned ' + t.name + '.', 'level');
+          toast(t.name + ' learned');
+          refreshPanel(); ctx.refresh(); ctx.save();
+        });
+      }
+      col.append(card);
+    }
+    tree.append(col);
+  }
+  body.append(tree);
+  return shell('The Body Remembers', st.memory + ' memory unspent', body, 900);
 }
 
 // ----------------------------------------------------------------- GUILD
@@ -185,7 +409,9 @@ function guildPanel(ctx: UICtx): HTMLElement {
       b.addEventListener('click', () => { st.active = null; refreshPanel(); ctx.refresh(); });
       card.append(b);
     }
-    body.append(el('h4', { style: 'margin:0 0 8px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, 'ACTIVE CONTRACT'), card, el('div', { class: 'sep' }));
+    body.append(
+      el('h4', { style: 'margin:0 0 8px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, 'ACTIVE CONTRACT'),
+      card, el('div', { class: 'sep' }));
   }
 
   const list = el('div', { class: 'list' });
@@ -200,7 +426,8 @@ function guildPanel(ctx: UICtx): HTMLElement {
       ),
       el('div', { style: 'text-align:right;flex:none' },
         el('div', { class: 't', style: 'color:#e0b64f' }, q.rewardGold + 'g'),
-        el('div', { class: 's' }, '+' + Math.round(q.rewardXp) + ' ' + SKILL_NAMES[q.rewardSkill]),
+        el('div', { class: 's', style: 'color:' + SKILL_COLOR[q.rewardSkill] },
+          '+' + Math.round(q.rewardXp) + ' ' + SKILL_NAMES[q.rewardSkill]),
       ),
     );
     if (!st.active) {
@@ -208,9 +435,7 @@ function guildPanel(ctx: UICtx): HTMLElement {
         st.active = { ...q, have: 0 };
         st.board = st.board.filter((x) => x.id !== q.id);
         pushLog(st, 'Accepted: ' + q.title, 'good');
-        refreshPanel();
-        ctx.refresh();
-        ctx.save();
+        refreshPanel(); ctx.refresh(); ctx.save();
       });
     }
     list.append(row);
@@ -219,7 +444,7 @@ function guildPanel(ctx: UICtx): HTMLElement {
 
   if (!st.active) {
     const rerollBtn = el('button', { class: 'btn small', style: 'margin-top:12px' }, 'Ask for new postings (10g)');
-    rerollBtn.disabled = st.gold < 10;
+    (rerollBtn as HTMLButtonElement).disabled = st.gold < 10;
     rerollBtn.addEventListener('click', () => {
       st.gold -= 10; refreshBoard(st); refreshPanel(); ctx.refresh();
     });
@@ -227,14 +452,29 @@ function guildPanel(ctx: UICtx): HTMLElement {
   }
 
   const gm = st.village.npcs.find((n) => n.role === 'guildmaster')!;
-  return shell(
-    'Adventurers Guild',
-    'Guildmaster ' + gm.name + ' — "' + gm.line + '"',
-    body, 660,
-  );
+  return shell('Quest Board', 'Posted by ' + gm.name, body, 680);
 }
 
 // ------------------------------------------------------------------ SHOP
+
+let shopTab: 'buy' | 'sell' | 'village' = 'buy';
+export function setShopTab(t: 'buy' | 'sell' | 'village'): void { shopTab = t; }
+
+function modSummary(it: Item): string {
+  const m = it.mods;
+  const bits: string[] = [];
+  if (m.atk) bits.push('+' + m.atk + ' atk');
+  if (m.spellPower) bits.push('+' + m.spellPower + ' sp');
+  if (m.armor) bits.push('+' + m.armor + ' arm');
+  if (m.hp) bits.push('+' + m.hp + ' hp');
+  if (m.speed) bits.push((m.speed > 0 ? '+' : '') + m.speed + ' spd');
+  if (m.critChance) bits.push('+' + Math.round(m.critChance * 100) + '% crit');
+  return bits.join('  ') || ITEM_DEFS[it.defId].desc || '—';
+}
+
+function skillGain(ctx: UICtx, k: SkillKey, n: number): void {
+  ctx.st.hero.skills[k].xp += n;
+}
 
 function shopPanel(ctx: UICtx): HTMLElement {
   const st = ctx.st;
@@ -243,38 +483,44 @@ function shopPanel(ctx: UICtx): HTMLElement {
   const body = el('div');
   const tabs = el('div', { class: 'tabs' });
   const content = el('div');
-  let tab: 'buy' | 'sell' | 'village' = shopTab;
 
-  const setTab = (t: typeof tab) => { shopTab = t; tab = t; draw(); };
-  const mk = (id: typeof tab, label: string) => {
-    const b = el('button', { class: 'tab' + (tab === id ? ' on' : '') }, label);
-    b.addEventListener('click', () => setTab(id));
+  const mk = (id: typeof shopTab, label: string) => {
+    const b = el('button', { class: 'tab' + (shopTab === id ? ' on' : '') }, label);
+    b.addEventListener('click', () => { shopTab = id; draw(); });
     return b;
   };
 
   function draw(): void {
+    for (const v of liveViews) v.destroy();
+    liveViews = [];
     clear(tabs); clear(content);
     tabs.append(mk('buy', 'Buy'), mk('sell', 'Sell'), mk('village', 'Village'));
-    if (tab === 'buy') drawBuy();
-    else if (tab === 'sell') drawSell();
+    if (shopTab === 'buy') drawBuy();
+    else if (shopTab === 'sell') drawSell();
     else drawVillage();
   }
 
   function drawBuy(): void {
     const list = el('div', { class: 'list' });
-    if (st.shopStock.length === 0) list.append(el('div', { class: 'muted center' }, 'Sold out. Come back after a run.'));
+    if (st.shopStock.length === 0) {
+      list.append(el('div', { class: 'muted center' }, 'Sold out. Come back after a run.'));
+    }
     for (const it of st.shopStock) {
       const price = Math.max(1, Math.round(itemValue(it) * d.buyMult));
       const row = el('div', { class: 'rowcard click' });
       row.append(
-        el('div', { class: 'swatch', style: 'background:' + ITEM_DEFS[it.defId].color + ';border-color:' + RARITY_COLOR[it.rarity] }),
+        el('div', {
+          class: 'swatch',
+          style: 'background:' + ITEM_DEFS[it.defId].color + ';border-color:' + RARITY_COLOR[it.rarity],
+        }),
         el('div', { class: 'grow' },
           el('div', { class: 't', style: 'color:' + RARITY_COLOR[it.rarity] }, displayName(it)),
           el('div', { class: 's' }, modSummary(it)),
         ),
         el('div', { class: 't', style: 'color:#e0b64f;flex:none' }, price + 'g'),
       );
-      row.addEventListener('mouseenter', (e) => import('./dom').then((m) => m.showTip(itemTooltip(it), e.clientX, e.clientY)));
+      row.addEventListener('mouseenter', (e) => showTip(itemTooltip(it), e.clientX, e.clientY));
+      row.addEventListener('mousemove', (e) => showTip(itemTooltip(it), e.clientX, e.clientY));
       row.addEventListener('mouseleave', hideTip);
       row.addEventListener('click', () => {
         if (st.gold < price) { toast('Not enough gold'); return; }
@@ -293,7 +539,7 @@ function shopPanel(ctx: UICtx): HTMLElement {
     const wrap = el('div', { class: 'bp-wrap' });
     const view = new GridView({
       grid: st.bag,
-      onChange: () => { ctx.refresh(); },
+      onChange: () => ctx.refresh(),
       onClickItem: (it) => {
         const price = Math.max(1, Math.round(itemValue(it) * d.sellMult));
         remove(st.bag, it.uid);
@@ -309,7 +555,7 @@ function shopPanel(ctx: UICtx): HTMLElement {
     const side = el('div', { class: 'side' });
     side.append(el('div', { class: 'statblock' },
       el('h4', {}, 'Selling'),
-      el('div', { class: 'muted' }, 'Click any item in your pack to sell it. Haggling level and village mood set the price.'),
+      el('div', { class: 'muted' }, 'Click anything in the pack to sell it. Worn gear is safe.'),
       el('div', { class: 'sep' }),
       el('div', { class: 'srow' }, el('span', {}, 'Sell rate'), el('b', {}, Math.round(d.sellMult * 100) + '%')),
       el('div', { class: 'srow' }, el('span', {}, 'Buy rate'), el('b', {}, Math.round(d.buyMult * 100) + '%')),
@@ -333,15 +579,15 @@ function shopPanel(ctx: UICtx): HTMLElement {
     });
     side.append(junk);
 
-    // resources from the homestead sell straight from the pile
-    const resBox = el('div', { class: 'statblock' }, el('h4', {}, 'Homestead Goods'));
+    const resBox = el('div', { class: 'statblock' }, el('h4', {}, 'Homestead goods'));
     let any = false;
     for (const p of PLOT_DEFS) {
       const amt = st.homestead.resources[p.resource] ?? 0;
       if (amt <= 0) continue;
       any = true;
       const price = Math.round(amt * p.sell * d.sellMult * 2);
-      const b = el('button', { class: 'btn small' }, 'Sell ' + fmt(amt) + ' ' + RESOURCE_NAMES[p.resource] + ' (' + fmt(price) + 'g)');
+      const b = el('button', { class: 'btn small' },
+        'Sell ' + fmt(amt) + ' ' + RESOURCE_NAMES[p.resource] + ' (' + fmt(price) + 'g)');
       b.addEventListener('click', () => {
         st.homestead.resources[p.resource] = 0;
         st.gold += price;
@@ -363,18 +609,18 @@ function shopPanel(ctx: UICtx): HTMLElement {
     const box = el('div');
     box.append(el('div', { class: 'statblock' },
       el('h4', {}, v.name + ' — era ' + v.era),
-      el('div', { class: 'srow' }, el('span', {}, 'Mood'), el('b', { style: 'color:' + (v.preset === 'thriving' ? '#8fd07a' : '#e0a25a') }, v.preset)),
+      el('div', { class: 'srow' }, el('span', {}, 'Mood'),
+        el('b', { style: 'color:' + (v.preset === 'thriving' ? '#8fd07a' : '#e0a25a') }, v.preset)),
       el('div', { class: 'srow' }, el('span', {}, 'Prosperity'), el('b', {}, Math.round(v.prosperity) + ' / 100')),
-      el('div', { class: 'bar xp', style: 'margin-top:6px' },
-        el('i', { style: 'width:' + v.prosperity + '%' })),
+      el('div', { class: 'bar xp', style: 'margin-top:6px' }, el('i', { style: 'width:' + v.prosperity + '%' })),
       el('div', { class: 'muted', style: 'margin-top:10px' },
-        'A prosperous village stocks better goods, pays more for contracts and charges less. It decays a little every time a Greyrat is buried. Donations carry over to your heirs.'),
+        'A prosperous village stocks better goods, pays more for contracts and charges less. ' +
+        'It decays a little every time one of your name is buried. Donations carry over to your heirs.'),
     ));
-
     const row = el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap' });
     for (const amt of [50, 200, 1000]) {
       const b = el('button', { class: 'btn' }, 'Donate ' + amt + 'g');
-      b.disabled = st.gold < amt;
+      (b as HTMLButtonElement).disabled = st.gold < amt;
       b.addEventListener('click', () => {
         st.gold -= amt;
         st.donated += amt;
@@ -386,35 +632,14 @@ function shopPanel(ctx: UICtx): HTMLElement {
       row.append(b);
     }
     box.append(row);
-    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, 'Donated this life: ' + fmt(st.donated) + 'g'));
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' },
+      'Donated this life: ' + fmt(st.donated) + 'g'));
     content.append(box);
   }
 
   draw();
   body.append(tabs, content);
-  return shell(
-    'General Store',
-    keeper.name + ' — "' + keeper.line + '"',
-    body, 780,
-  );
-}
-
-let shopTab: 'buy' | 'sell' | 'village' = 'buy';
-
-function modSummary(it: Item): string {
-  const m = it.mods;
-  const bits: string[] = [];
-  if (m.atk) bits.push('+' + m.atk + ' atk');
-  if (m.spellPower) bits.push('+' + m.spellPower + ' sp');
-  if (m.armor) bits.push('+' + m.armor + ' arm');
-  if (m.hp) bits.push('+' + m.hp + ' hp');
-  if (m.speed) bits.push((m.speed > 0 ? '+' : '') + m.speed + ' spd');
-  if (m.critChance) bits.push('+' + Math.round(m.critChance * 100) + '% crit');
-  return bits.join('  ') || ITEM_DEFS[it.defId].desc || '—';
-}
-
-function skillGain(ctx: UICtx, k: SkillKey, n: number): void {
-  ctx.st.hero.skills[k].xp += n;
+  return shell('General Store', keeper.name, body, 800);
 }
 
 // ----------------------------------------------------------------- SMITH
@@ -427,14 +652,13 @@ function smithPanel(ctx: UICtx): HTMLElement {
 
   body.append(el('div', { class: 'statblock' },
     el('h4', {}, 'Materials'),
-    el('div', { class: 'srow' }, el('span', {}, 'Gem Dust'), el('b', {}, fmt(dust))),
-    el('div', { class: 'srow' }, el('span', {}, 'Rough Gems in pack'),
+    el('div', { class: 'srow' }, el('span', {}, 'Gem dust'), el('b', {}, fmt(dust))),
+    el('div', { class: 'srow' }, el('span', {}, 'Rough gems in pack'),
       el('b', {}, String(st.bag.items.filter((i) => i.defId === 'gem').reduce((a, b) => a + b.count, 0)))),
-    el('div', { class: 'muted', style: 'margin-top:8px' },
-      'Each enhancement adds +12% to a piece of gear. Grind rough gems into dust, or let the Crystal Font at home fill the barrel for you.'),
   ));
 
-  const grind = el('button', { class: 'btn small', style: 'margin:10px 0' }, 'Grind all Rough Gems (×15 dust each)');
+  const grind = el('button', { class: 'btn small', style: 'margin:10px 0' },
+    'Grind all rough gems (15 dust each)');
   grind.addEventListener('click', () => {
     const gems = st.bag.items.filter((i) => i.defId === 'gem');
     const n = gems.reduce((a, b) => a + b.count, 0);
@@ -450,14 +674,16 @@ function smithPanel(ctx: UICtx): HTMLElement {
   body.append(el('h4', { style: 'margin:0 0 8px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, 'ENHANCE'));
 
   const list = el('div', { class: 'list' });
-  const gear = st.bag.items.filter(isGear);
-  if (gear.length === 0) list.append(el('div', { class: 'muted center' }, 'No gear in your pack.'));
-  for (const it of gear) {
+  const worn = EQUIP_SLOTS.map((s) => st.equipped[s]).filter((x): x is Item => !!x);
+  const carried = st.bag.items.filter(isGear);
+  const all = [...worn, ...carried];
+  if (all.length === 0) list.append(el('div', { class: 'muted center' }, 'Nothing to work on.'));
+  for (const it of all) {
     const cost = Math.round(30 * Math.pow(1.7, it.plus));
     const goldCost = Math.round(20 * Math.pow(1.6, it.plus));
     const row = el('div', { class: 'rowcard' });
     const b = el('button', { class: 'btn small primary' }, '+1  (' + cost + ' dust, ' + goldCost + 'g)');
-    b.disabled = dust < cost || st.gold < goldCost || it.plus >= 10;
+    (b as HTMLButtonElement).disabled = dust < cost || st.gold < goldCost || it.plus >= 10;
     b.addEventListener('click', () => {
       st.homestead.resources.gemdust -= cost;
       st.gold -= goldCost;
@@ -466,9 +692,13 @@ function smithPanel(ctx: UICtx): HTMLElement {
       refreshPanel(); ctx.refresh(); ctx.save();
     });
     row.append(
-      el('div', { class: 'swatch', style: 'background:' + ITEM_DEFS[it.defId].color + ';border-color:' + RARITY_COLOR[it.rarity] }),
+      el('div', {
+        class: 'swatch',
+        style: 'background:' + ITEM_DEFS[it.defId].color + ';border-color:' + RARITY_COLOR[it.rarity],
+      }),
       el('div', { class: 'grow' },
-        el('div', { class: 't', style: 'color:' + RARITY_COLOR[it.rarity] }, displayName(it)),
+        el('div', { class: 't', style: 'color:' + RARITY_COLOR[it.rarity] },
+          displayName(it) + (worn.includes(it) ? '  (worn)' : '')),
         el('div', { class: 's' }, modSummary(it)),
       ),
       b,
@@ -479,8 +709,9 @@ function smithPanel(ctx: UICtx): HTMLElement {
 
   body.append(el('div', { class: 'sep' }));
   const bagCost = Math.round(220 * Math.pow(2.1, st.bag.h - 6));
-  const expand = el('button', { class: 'btn' }, 'Buy a bigger pack: ' + st.bag.w + '×' + (st.bag.h + 1) + ' (' + fmt(bagCost) + 'g)');
-  expand.disabled = st.gold < bagCost || st.bag.h >= 10;
+  const expand = el('button', { class: 'btn' },
+    'Buy a bigger pack: ' + st.bag.w + '×' + (st.bag.h + 1) + ' (' + fmt(bagCost) + 'g)');
+  (expand as HTMLButtonElement).disabled = st.gold < bagCost || st.bag.h >= 10;
   expand.addEventListener('click', () => {
     st.gold -= bagCost;
     st.bag.h += 1;
@@ -488,29 +719,31 @@ function smithPanel(ctx: UICtx): HTMLElement {
     refreshPanel(); ctx.refresh(); ctx.save();
   });
   body.append(expand);
-  body.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'Pack size is lost with the body. Everything is.'));
 
-  return shell('Smithy', smith.name + ' — "' + smith.line + '"', body, 640);
+  return shell('Smithy', smith.name, body, 660);
 }
 
 // -------------------------------------------------------------- HOMESTEAD
+
+let homeTab: 'work' | 'chest' = 'work';
 
 function homePanel(ctx: UICtx): HTMLElement {
   const st = ctx.st;
   const body = el('div');
   const tabs = el('div', { class: 'tabs' });
   const content = el('div');
-  let tab: 'work' | 'chest' = homeTab;
-  const mk = (id: typeof tab, label: string) => {
-    const b = el('button', { class: 'tab' + (tab === id ? ' on' : '') }, label);
-    b.addEventListener('click', () => { homeTab = id; tab = id; draw(); });
+  const mk = (id: typeof homeTab, label: string) => {
+    const b = el('button', { class: 'tab' + (homeTab === id ? ' on' : '') }, label);
+    b.addEventListener('click', () => { homeTab = id; draw(); });
     return b;
   };
 
   function draw(): void {
+    for (const v of liveViews) v.destroy();
+    liveViews = [];
     clear(tabs); clear(content);
     tabs.append(mk('work', 'Grounds'), mk('chest', 'Heirloom Chest'));
-    if (tab === 'work') drawWork(); else drawChest();
+    if (homeTab === 'work') drawWork(); else drawChest();
   }
 
   function drawWork(): void {
@@ -534,7 +767,7 @@ function homePanel(ctx: UICtx): HTMLElement {
 
       if (!plot.owned) {
         const b = el('button', { class: 'btn primary' }, 'Buy the plot (' + fmt(plot.cost) + 'g)');
-        b.disabled = st.gold < plot.cost;
+        (b as HTMLButtonElement).disabled = st.gold < plot.cost;
         b.addEventListener('click', () => {
           st.gold -= plot.cost; plot.owned = true;
           toast('You bought the ' + plot.name);
@@ -542,26 +775,31 @@ function homePanel(ctx: UICtx): HTMLElement {
         });
         card.append(el('div', { class: 'muted' }, 'Produces ' + RESOURCE_NAMES[plot.resource] + '.'), b);
       } else {
+        const gain = el('div', { class: 'muted', style: 'opacity:0;transition:opacity .3s;color:#9ec96a;font-weight:700;height:14px' }, '');
         const harvest = el('div', { class: 'harvest' }, 'Work the ' + plot.name.toLowerCase());
         harvest.addEventListener('click', () => {
           const got = clickPlot(st, plot.id);
-          const amt = card.querySelector('.gain') as HTMLElement | null;
-          if (amt) { amt.textContent = '+' + got; amt.style.opacity = '1'; setTimeout(() => { amt.style.opacity = '0'; }, 400); }
-          updateNumbers();
+          gain.textContent = '+' + got + ' ' + RESOURCE_NAMES[plot.resource];
+          gain.style.opacity = '1';
+          setTimeout(() => { gain.style.opacity = '0'; }, 420);
+          const cells = content.querySelectorAll('.statblock .srow b');
+          PLOT_DEFS.forEach((pp, i) => {
+            if (cells[i]) cells[i].textContent = fmt(st.homestead.resources[pp.resource] ?? 0);
+          });
         });
-        card.append(harvest);
+        card.append(harvest, gain);
         card.append(el('div', { class: 'prog' }, el('i', { style: 'width:' + plot.progress * 100 + '%' })));
 
         const wc = workerCost(plot);
         const uc = upgradeCost(plot);
         const row = el('div', { style: 'display:flex;gap:6px' });
         const hire = el('button', { class: 'btn small' }, 'Hire hand (' + fmt(wc) + 'g)');
-        hire.disabled = st.gold < wc;
+        (hire as HTMLButtonElement).disabled = st.gold < wc;
         hire.addEventListener('click', () => {
           st.gold -= wc; plot.workers += 1; draw(); ctx.refresh(); ctx.save();
         });
         const up = el('button', { class: 'btn small' }, 'Improve (' + fmt(uc) + 'g)');
-        up.disabled = st.gold < uc;
+        (up as HTMLButtonElement).disabled = st.gold < uc;
         up.addEventListener('click', () => {
           st.gold -= uc; plot.level += 1; draw(); ctx.refresh(); ctx.save();
         });
@@ -569,21 +807,15 @@ function homePanel(ctx: UICtx): HTMLElement {
         card.append(row);
         card.append(el('div', { class: 'muted' },
           plot.workers + ' hand' + (plot.workers === 1 ? '' : 's') + ' · ' +
-          (plot.workers > 0 ? (plot.workers * plot.level / pd.secs).toFixed(2) + '/s while you are away' : 'idle')));
-        card.append(el('div', { class: 'gain muted', style: 'opacity:0;transition:opacity .3s;color:#9ec96a;font-weight:700' }, ''));
+          (plot.workers > 0
+            ? (plot.workers * plot.level / pd.secs).toFixed(2) + '/s while you are away'
+            : 'idle')));
       }
       grid.append(card);
     }
     content.append(grid);
     content.append(el('div', { class: 'muted', style: 'margin-top:12px' },
       'The land is family property. Plots, hands and stores all survive your death.'));
-  }
-
-  function updateNumbers(): void {
-    const res = content.querySelectorAll('.statblock .srow b');
-    PLOT_DEFS.forEach((p, i) => {
-      if (res[i]) res[i].textContent = fmt(st.homestead.resources[p.resource] ?? 0);
-    });
   }
 
   function drawChest(): void {
@@ -601,7 +833,7 @@ function homePanel(ctx: UICtx): HTMLElement {
     );
     content.append(wrap);
     content.append(el('div', { class: 'muted', style: 'margin-top:12px' },
-      'Drag anything you want your heir to inherit into the chest. Gear in the chest gives you no bonuses while it sits there.'));
+      'Drag anything you want your heir to inherit into the chest. It gives no bonuses while it sits there.'));
   }
 
   draw();
@@ -609,61 +841,11 @@ function homePanel(ctx: UICtx): HTMLElement {
   return shell('Homestead', 'The house your line keeps rebuilding.', body, 800);
 }
 
-let homeTab: 'work' | 'chest' = 'work';
-
-// ------------------------------------------------------------- CHARACTER
-
-function charPanel(ctx: UICtx): HTMLElement {
-  const st = ctx.st;
-  const d = derived(st);
-  const body = el('div', { class: 'bp-wrap' });
-
-  const left = el('div', { style: 'width:340px' });
-  left.append(el('div', { class: 'statblock' },
-    el('h4', {}, 'Bloodline'),
-    el('div', { class: 'srow' }, el('span', {}, 'Name'), el('b', {}, st.hero.name)),
-    el('div', { class: 'srow' }, el('span', {}, 'Calling'), el('b', {}, st.hero.classId)),
-    el('div', { class: 'srow' }, el('span', {}, 'Generation'), el('b', {}, String(st.generation))),
-    el('div', { class: 'srow' }, el('span', {}, 'Blood bonus'), el('b', {}, '+' + st.legacy.bloodlineBonus + ' to all stats')),
-    el('div', { class: 'sep' }),
-    el('div', { class: 't', style: 'font-weight:700;color:' + (st.hero.trait.good ? '#8fd07a' : '#e0a25a') }, st.hero.trait.name),
-    el('div', { class: 'muted' }, st.hero.trait.desc),
-  ));
-
-  const stats = el('div', { class: 'statblock', style: 'margin-top:12px' }, el('h4', {}, 'Attributes'));
-  for (const [k, name] of Object.entries(STAT_NAMES)) {
-    stats.append(el('div', { class: 'srow' }, el('span', {}, name),
-      el('b', {}, String(d.stats[k as keyof typeof d.stats]))));
-  }
-  left.append(stats);
-
-  if (st.epitaphs.length) {
-    const graves = el('div', { class: 'statblock', style: 'margin-top:12px' }, el('h4', {}, 'The Graves'));
-    for (const e of st.epitaphs.slice(0, 6)) {
-      graves.append(el('div', { class: 'muted', style: 'padding:3px 0' },
-        'Gen ' + e.gen + ' · ' + e.name + ' — killed by ' + e.cause + ' (' + e.kills + ' kills)'));
-    }
-    left.append(graves);
-  }
-
-  const right = el('div', { style: 'flex:1;min-width:300px' });
-  right.append(el('h4', { style: 'margin:0 0 10px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, 'SKILLS — you get better at what you do'));
-  for (const k of Object.keys(SKILL_NAMES) as SkillKey[]) {
-    const p = levelProgress(st.hero.skills[k].xp);
-    const inherited = st.legacy.legacy[k] ?? 0;
-    right.append(el('div', { style: 'margin-bottom:9px' },
-      el('div', { style: 'display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px' },
-        el('span', {}, SKILL_NAMES[k] + (inherited > 0 ? ' · inherited' : '')),
-        el('b', { style: 'color:#e0b64f' }, 'Lv ' + p.level)),
-      el('div', { class: 'bar xp' }, el('i', { style: 'width:' + (p.need ? (p.into / p.need) * 100 : 0) + '%' })),
-    ));
-  }
-
-  body.append(left, right);
-  return shell('Character', 'Skills carry a fraction of themselves into your descendants.', body, 780);
-}
-
 // ------------------------------------------------------------------ GATE
+
+export function restCost(st: GameState): number {
+  return Math.max(5, Math.round(12 * st.village.npcs[0].priceMod));
+}
 
 function gatePanel(ctx: UICtx): HTMLElement {
   const st = ctx.st;
@@ -691,17 +873,19 @@ function gatePanel(ctx: UICtx): HTMLElement {
     list.append(row);
   }
   body.append(list);
+
   const d = derived(st);
   body.append(el('div', { class: 'sep' }));
   body.append(el('div', { class: 'muted' },
     'Health: ' + Math.ceil(st.hp) + ' / ' + d.maxHp +
-    '. You do not heal by walking through the gate — rest at home or drink something.'));
+    '. Walking through the gate does not heal you.'));
 
-  const rest = el('button', { class: 'btn', style: 'margin-top:10px' }, 'Rest at the inn (' + restCost(st) + 'g)');
-  rest.disabled = st.gold < restCost(st) || st.hp >= d.maxHp;
+  const cost = restCost(st);
+  const rest = el('button', { class: 'btn', style: 'margin-top:10px' }, 'Rest at the inn (' + cost + 'g)');
+  (rest as HTMLButtonElement).disabled = st.gold < cost || st.hp >= d.maxHp;
   rest.addEventListener('click', () => {
-    st.gold -= restCost(st);
-    st.hp = d.maxHp; st.mana = d.maxMana;
+    st.gold -= cost;
+    st.hp = d.maxHp; st.mana = d.maxMana; st.stamina = d.maxStamina;
     toast('You sleep until dawn');
     refreshPanel(); ctx.refresh(); ctx.save();
   });
@@ -710,11 +894,7 @@ function gatePanel(ctx: UICtx): HTMLElement {
   return shell('Village Gate', 'Where the road starts.', body, 620);
 }
 
-export function restCost(st: GameState): number {
-  return Math.max(5, Math.round(12 * st.village.npcs[0].priceMod));
-}
-
-// -------------------------------------------------------------- SHOP RESET
+// ------------------------------------------------------------------ misc
 
 export function restockShop(st: GameState): void {
   st.shopStock = rollShopStock(rng, st.village);
@@ -722,4 +902,8 @@ export function restockShop(st: GameState): void {
 
 export function grantStarterKit(st: GameState): void {
   autoPlace(st.bag, makeItem(rng, 'healing_draught', 'common'));
+}
+
+export function unequipAll(st: GameState): void {
+  for (const s of EQUIP_SLOTS) unequip(st, s);
 }

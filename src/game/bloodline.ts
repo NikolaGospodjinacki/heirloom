@@ -40,6 +40,19 @@ export function rollAppearance(r: RNG): Appearance {
   };
 }
 
+/** A descendant: mostly the parent's face, with a couple of things rerolled. */
+export function descendantOf(r: RNG, parent: Appearance): Appearance {
+  const a = { ...parent };
+  a.skin = r.chance(0.75) ? parent.skin : r.pick(SKIN);
+  a.hair = r.chance(0.6) ? parent.hair : r.pick(HAIR);
+  a.hairStyle = r.chance(0.35) ? parent.hairStyle : r.int(0, 3);
+  a.cloth = r.pick(CLOTH);
+  a.accent = r.pick(ACCENT);
+  a.build = Math.max(0, Math.min(1, parent.build + r.float(-0.25, 0.25)));
+  a.height = Math.max(0.88, Math.min(1.16, parent.height + r.float(-0.06, 0.06)));
+  return a;
+}
+
 export const TRAITS: Trait[] = [
   { id: 'none', name: 'Unremarkable', desc: 'No gift, no curse.', good: true },
   { id: 'prodigy', name: 'Prodigy', desc: '+25% skill experience.', good: true },
@@ -55,7 +68,7 @@ export const TRAITS: Trait[] = [
 ];
 
 export function emptySkills(): Skills {
-  const keys: SkillKey[] = ['blade', 'sorcery', 'hunting', 'slaying', 'woodcutting', 'mining', 'haggling', 'vigor'];
+  const keys: SkillKey[] = ['blade', 'sorcery', 'hunting', 'slaying', 'woodcutting', 'mining', 'haggling', 'vigor', 'footwork'];
   const s = {} as Skills;
   for (const k of keys) s[k] = { xp: 0 };
   return s;
@@ -116,31 +129,61 @@ export function rollHero(r: RNG, classId: ClassId, gen: number, memory: Bloodlin
 
 const VILLAGE_NAMES = ['Buena', 'Roa', 'Millis', 'Fittoa', 'Hollowmere', 'Ashford', 'Stonebrook', 'Larkfen'];
 
-const THRIVING_LINES = [
-  'Trade has been good. Take a look at the good stock.',
-  'The road is safe again, thanks to folk like you.',
-  'We are building a new granary. Fine times.',
-];
-const STRUGGLING_LINES = [
-  'Half the young ones left for the city. Buy something, please.',
-  'Wolves at the fence again. Nobody sleeps well.',
-  'Prices are what they are. I have mouths to feed.',
-];
+const THRIVING_LINES: Record<VillageNPC['role'], string[]> = {
+  shopkeeper: [
+    'Trade has been good. Take a look at the proper stock, not the shelf by the door.',
+    'Caravans twice a month now. I can afford to be picky about what I buy.',
+    'Coin moves, and when coin moves everybody eats. What do you need?',
+  ],
+  guildmaster: [
+    'Full board today. Half of it is honest work, the other half pays better.',
+    'We have had three good years. Do not be the one who ends them.',
+    'Adventurers with your name have sat in that chair before. Some walked out again.',
+  ],
+  smith: [
+    'Charcoal is cheap and my forge is hot. Bring me something worth ruining.',
+    'I have apprentices now. Two of them are even useful.',
+    'Good steel, fair price. That is the whole speech.',
+  ],
+};
+const STRUGGLING_LINES: Record<VillageNPC['role'], string[]> = {
+  shopkeeper: [
+    'Half the young ones left for the city. Buy something. Please.',
+    'I sell what I can get, and lately I cannot get much.',
+    'Prices are what they are. I have mouths to feed and no caravan since spring.',
+  ],
+  guildmaster: [
+    'Board is thin. Nobody posts work they cannot pay for.',
+    'Wolves at the fence again. Nobody in this village sleeps well.',
+    'I have buried more adventurers than I have hired. Do not take that personally.',
+  ],
+  smith: [
+    'Fuel costs more than the steel. Do not ask me how that works.',
+    'I mend pots now. Pots. Bring me a real commission.',
+    'Everything I make gets sold south. Nothing stays here.',
+  ],
+};
 
-export function rollVillage(r: RNG, prosperity: number, era: number, prevName?: string): Village {
+export function rollVillage(
+  r: RNG, prosperity: number, era: number, prevName?: string, prev?: VillageNPC[],
+): Village {
   const preset: Village['preset'] = prosperity >= 50 ? 'thriving' : 'struggling';
   const lines = preset === 'thriving' ? THRIVING_LINES : STRUGGLING_LINES;
   const priceBase = preset === 'thriving' ? 0.92 : 1.12;
-  const npcs: VillageNPC[] = [
-    { role: 'shopkeeper', name: npcName(r), line: r.pick(lines), priceMod: priceBase * r.float(0.94, 1.08) },
-    { role: 'guildmaster', name: npcName(r), line: r.pick(lines), priceMod: 1 },
-    { role: 'smith', name: npcName(r), line: r.pick(lines), priceMod: priceBase * r.float(0.94, 1.08) },
-  ];
-  return {
-    name: prevName ?? r.pick(VILLAGE_NAMES),
-    prosperity,
-    era,
-    npcs,
-    preset,
-  };
+  const roles: VillageNPC['role'][] = ['shopkeeper', 'guildmaster', 'smith'];
+  const npcs: VillageNPC[] = roles.map((role) => {
+    const parent = prev?.find((p) => p.role === role);
+    // The shop does not change hands, it changes generations. Faces stay in the family.
+    const appearance = parent ? descendantOf(r, parent.appearance) : rollAppearance(r);
+    const name = parent
+      ? r.pick(NPC_FIRST) + ' ' + surnameOf(parent.name)
+      : npcName(r);
+    return {
+      role, name, appearance,
+      line: r.pick(lines[role]),
+      mood: r.shuffle([...lines[role]]),
+      priceMod: role === 'guildmaster' ? 1 : priceBase * r.float(0.94, 1.08),
+    };
+  });
+  return { name: prevName ?? r.pick(VILLAGE_NAMES), prosperity, era, npcs, preset };
 }

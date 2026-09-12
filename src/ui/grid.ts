@@ -1,4 +1,5 @@
-import type { Item } from '../game/types';
+import type { EquipSlot, Item } from '../game/types';
+import { SLOT_NAMES } from '../game/types';
 import { RARITY_COLOR } from '../game/types';
 import { ITEM_DEFS, displayName, itemMods, itemValue, rotatedShape } from '../game/items';
 import { Grid, canPlace, place, remove } from '../game/backpack';
@@ -19,6 +20,7 @@ export interface GridViewOpts {
 }
 
 const mounted = new Set<GridView>();
+const slots = new Set<SlotView>();
 
 export class GridView {
   host: HTMLDivElement;
@@ -126,6 +128,65 @@ export class GridView {
   }
 }
 
+/**
+ * A single paper-doll slot. It behaves like a one-item grid for drag purposes:
+ * you can drop gear onto it, and drag gear back off it.
+ */
+export interface SlotViewOpts {
+  slot: EquipSlot;
+  get: () => Item | null;
+  /** return false to reject the change, for example when the pack is full */
+  set: (it: Item | null) => boolean;
+  accepts: (it: Item) => boolean;
+  onChange?: () => void;
+}
+
+export class SlotView {
+  host: HTMLDivElement;
+  opts: SlotViewOpts;
+
+  constructor(opts: SlotViewOpts) {
+    this.opts = opts;
+    this.host = el('div', { class: 'slot', 'data-slot': opts.slot });
+    slots.add(this);
+    this.render();
+  }
+
+  destroy(): void { slots.delete(this); }
+
+  render(): void {
+    clear(this.host);
+    const it = this.opts.get();
+    this.host.classList.toggle('filled', !!it);
+    if (!it) {
+      this.host.append(el('div', { class: 'slot-empty' }, SLOT_NAMES[this.opts.slot]));
+      return;
+    }
+    const def = ITEM_DEFS[it.defId];
+    const shine = it.rarity === 'common'
+      ? ''
+      : ';box-shadow:0 0 12px ' + RARITY_COLOR[it.rarity] + '66';
+    const chip = el('div', {
+      class: 'slot-item',
+      style: 'background:' + def.color + ';border-color:' + RARITY_COLOR[it.rarity] + shine,
+    }, el('span', {}, shortName(it.name)));
+    if (it.plus > 0) chip.append(el('div', { class: 'pl' }, '+' + it.plus));
+    chip.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      startSlotDrag(this, it, e);
+    });
+    chip.addEventListener('mouseenter', (e) => showTip(itemTooltip(it), e.clientX, e.clientY));
+    chip.addEventListener('mousemove', (e) => showTip(itemTooltip(it), e.clientX, e.clientY));
+    chip.addEventListener('mouseleave', hideTip);
+    this.host.append(chip);
+  }
+
+  contains(x: number, y: number): boolean {
+    const r = this.host.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+}
+
 export function shortName(n: string): string {
   const parts = n.split(' ');
   if (parts.length <= 2) return n;
@@ -171,7 +232,8 @@ export function itemTooltip(it: Item): HTMLElement {
 // ------------------------------------------------------------------- drag
 
 interface DragSession {
-  from: GridView;
+  from: GridView | null;
+  fromSlot: SlotView | null;
   item: Item;
   el: HTMLDivElement;
   ox: number;
@@ -207,7 +269,7 @@ function startDrag(view: GridView, it: Item, e: PointerEvent): void {
   const grabCell: [number, number] = [
     Math.floor(ox / (CELL + GAP)), Math.floor(oy / (CELL + GAP)),
   ];
-  drag = { from: view, item: it, el: clone, ox, oy, rot: it.rot, grabCell };
+  drag = { from: view, fromSlot: null, item: it, el: clone, ox, oy, rot: it.rot, grabCell };
 
   // hide the original while it is in the air
   for (const c of Array.from(view.itemsHost.children)) {
@@ -221,15 +283,59 @@ function startDrag(view: GridView, it: Item, e: PointerEvent): void {
   window.addEventListener('keydown', onKey);
 }
 
+function startSlotDrag(view: SlotView, it: Item, e: PointerEvent): void {
+  hideTip();
+  e.preventDefault();
+  const layer = document.getElementById('drag-layer')!;
+  const clone = makeFloatingItem({ ...it, rot: 0 });
+  clone.style.left = (e.clientX - CELL / 2) + 'px';
+  clone.style.top = (e.clientY - CELL / 2) + 'px';
+  layer.append(clone);
+  drag = {
+    from: null, fromSlot: view, item: it, el: clone,
+    ox: CELL / 2, oy: CELL / 2, rot: 0, grabCell: [0, 0],
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('keydown', onKey);
+}
+
+/** A detached copy of an item for the cursor to carry around. */
+function makeFloatingItem(it: Item): HTMLDivElement {
+  const def = ITEM_DEFS[it.defId];
+  const cells = rotatedShape(def.shape, it.rot);
+  const w = Math.max(...cells.map((c) => c[0])) + 1;
+  const h = Math.max(...cells.map((c) => c[1])) + 1;
+  const node = el('div', {
+    class: 'gitem',
+    style: 'position:fixed;pointer-events:none;background:transparent;border:none;width:'
+      + px(w) + 'px;height:' + px(h) + 'px',
+  });
+  for (const [cx, cy] of cells) {
+    node.append(el('div', {
+      style: [
+        'position:absolute',
+        'left:' + cx * (CELL + GAP) + 'px', 'top:' + cy * (CELL + GAP) + 'px',
+        'width:' + CELL + 'px', 'height:' + CELL + 'px',
+        'background:' + def.color,
+        'border:1.5px solid ' + RARITY_COLOR[it.rarity],
+        'border-radius:5px',
+      ].join(';'),
+    }));
+  }
+  node.append(el('div', {
+    class: 'lbl',
+    style: 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center',
+  }, shortName(it.name)));
+  return node;
+}
+
 function onKey(e: KeyboardEvent): void {
   if (!drag) return;
   if (e.key === 'r' || e.key === 'R') {
     e.preventDefault();
     drag.rot = ((drag.rot + 1) & 3) as 0 | 1 | 2 | 3;
-    const tmp = { ...drag.item, rot: drag.rot };
-    const nel = drag.from.makeItemEl(tmp, true);
-    nel.style.position = 'fixed';
-    nel.style.pointerEvents = 'none';
+    const nel = makeFloatingItem({ ...drag.item, rot: drag.rot });
     drag.el.replaceWith(nel);
     drag.el = nel;
     drag.ox = CELL / 2; drag.oy = CELL / 2;
@@ -248,6 +354,13 @@ function onMove(e: PointerEvent): void {
 
   for (const v of mounted) v.ghost.style.display = 'none';
   for (const z of dropZones) z.hi?.classList.remove('hot');
+  for (const sv of slots) sv.host.classList.remove('hot', 'nope');
+
+  for (const sv of slots) {
+    if (!sv.contains(e.clientX, e.clientY)) continue;
+    sv.host.classList.add(sv.opts.accepts(drag.item) ? 'hot' : 'nope');
+    return;
+  }
 
   const target = [...mounted].find((v) => v.opts.editable !== false && v.contains(e.clientX, e.clientY));
   if (target) {
@@ -258,7 +371,7 @@ function onMove(e: PointerEvent): void {
       const w = Math.max(...cells.map((x) => x[0])) + 1;
       const h = Math.max(...cells.map((x) => x[1])) + 1;
       const probe = { ...drag.item, rot: drag.rot };
-      const ok = target.opts.grid === drag.from.opts.grid
+      const ok = drag.from && target.opts.grid === drag.from.opts.grid
         ? canPlace(target.opts.grid, probe, gx, gy, drag.rot)
         : canPlaceForeign(target.opts.grid, probe, gx, gy, drag.rot);
       const g = target.ghost;
@@ -290,14 +403,30 @@ function onUp(e: PointerEvent): void {
   d.el.remove();
   for (const v of mounted) v.ghost.style.display = 'none';
   for (const z of dropZones) z.hi?.classList.remove('hot');
+  for (const sv of slots) sv.host.classList.remove('hot', 'nope');
   drag = null;
+
+  // dropped onto a paper-doll slot
+  for (const sv of slots) {
+    if (!sv.contains(e.clientX, e.clientY)) continue;
+    if (sv.opts.accepts(d.item)) sv.opts.set(d.item);
+    redrawAll();
+    sv.opts.onChange?.();
+    return;
+  }
 
   const target = [...mounted].find((v) => v.opts.editable !== false && v.contains(e.clientX, e.clientY));
   if (target) {
     const c = target.cellAt(e.clientX, e.clientY);
     if (c) {
       const gx = c[0] - d.grabCell[0], gy = c[1] - d.grabCell[1];
-      if (target.opts.grid === d.from.opts.grid) {
+      if (d.fromSlot) {
+        const probe = { ...d.item, rot: d.rot };
+        if (canPlace(target.opts.grid, probe, gx, gy, d.rot)) {
+          d.fromSlot.opts.set(null);
+          place(target.opts.grid, d.item, gx, gy, d.rot);
+        }
+      } else if (d.from && target.opts.grid === d.from.opts.grid) {
         const old = { gx: d.item.gx, gy: d.item.gy, rot: d.item.rot };
         remove(target.opts.grid, d.item.uid);
         if (!place(target.opts.grid, d.item, gx, gy, d.rot)) {
@@ -306,34 +435,40 @@ function onUp(e: PointerEvent): void {
       } else {
         const probe = { ...d.item, rot: d.rot };
         if (canPlace(target.opts.grid, probe, gx, gy, d.rot)) {
-          remove(d.from.opts.grid, d.item.uid);
+          if (d.from) remove(d.from.opts.grid, d.item.uid);
           place(target.opts.grid, d.item, gx, gy, d.rot);
         }
       }
     }
-    d.from.render();
-    target.render();
-    d.from.opts.onChange?.();
-    if (target !== d.from) target.opts.onChange?.();
+    redrawAll();
+    target.opts.onChange?.();
+    if (d.from) d.from.opts.onChange?.();
     return;
   }
 
-  for (const z of dropZones) {
-    if (z.test(e.clientX, e.clientY)) {
-      if (z.accept(d.item, d.from)) {
-        d.from.render();
-        d.from.opts.onChange?.();
-        return;
+  if (d.from) {
+    for (const z of dropZones) {
+      if (z.test(e.clientX, e.clientY)) {
+        if (z.accept(d.item, d.from)) {
+          redrawAll();
+          d.from.opts.onChange?.();
+          return;
+        }
       }
     }
   }
-  d.from.render();
+  redrawAll();
+}
+
+function redrawAll(): void {
+  for (const v of mounted) v.render();
+  for (const sv of slots) sv.render();
 }
 
 export function cancelDrag(): void {
   if (!drag) return;
   drag.el.remove();
-  drag.from.render();
+  redrawAll();
   window.removeEventListener('pointermove', onMove);
   window.removeEventListener('pointerup', onUp);
   window.removeEventListener('keydown', onKey);

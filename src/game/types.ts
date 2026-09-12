@@ -13,7 +13,7 @@ export const STAT_NAMES: Record<StatKey, string> = {
 
 export type SkillKey =
   | 'blade' | 'sorcery' | 'hunting' | 'slaying'
-  | 'woodcutting' | 'mining' | 'haggling' | 'vigor';
+  | 'woodcutting' | 'mining' | 'haggling' | 'vigor' | 'footwork';
 
 export const SKILL_NAMES: Record<SkillKey, string> = {
   blade: 'Bladework',
@@ -24,6 +24,32 @@ export const SKILL_NAMES: Record<SkillKey, string> = {
   mining: 'Mining',
   haggling: 'Haggling',
   vigor: 'Vigor',
+  footwork: 'Footwork',
+};
+
+/** What each level actually buys you. Shown verbatim in the skills panel. */
+export const SKILL_EFFECT: Record<SkillKey, string> = {
+  blade: '+0.9 attack, +0.35% crit',
+  sorcery: '+1.1 spell power, +4 max mana, cheaper bolts',
+  hunting: '+4% damage to beasts, +3% beast drop rate',
+  slaying: '+4% damage to monsters and men, +3% gold from kills',
+  woodcutting: '+8% chop speed, better wood',
+  mining: '+8% mining speed, better ore and gems',
+  haggling: 'buy 1.2% cheaper, sell 1.8% dearer',
+  vigor: '+5 max health, +0.4 armour, faster recovery',
+  footwork: '+1.6 move speed, -1.5% dash cooldown, +2 stamina',
+};
+
+export const SKILL_COLOR: Record<SkillKey, string> = {
+  blade: '#d8896a',
+  sorcery: '#9a7bd6',
+  hunting: '#8fb85f',
+  slaying: '#d0605a',
+  woodcutting: '#b0813f',
+  mining: '#8f98a8',
+  haggling: '#e0b64f',
+  vigor: '#5fae7a',
+  footwork: '#5fb0d4',
 };
 
 export type Skills = Record<SkillKey, { xp: number }>;
@@ -45,6 +71,21 @@ export const RARITY_MULT: Record<Rarity, number> = {
 export type ItemKind =
   | 'weapon' | 'offhand' | 'head' | 'body' | 'feet' | 'trinket'
   | 'consumable' | 'loot' | 'gem' | 'tool';
+
+/** The five paper-doll slots. Everything else lives loose in the pack. */
+export type EquipSlot = 'weapon' | 'offhand' | 'head' | 'body' | 'feet';
+export const EQUIP_SLOTS: EquipSlot[] = ['weapon', 'offhand', 'head', 'body', 'feet'];
+export const SLOT_NAMES: Record<EquipSlot, string> = {
+  weapon: 'Weapon', offhand: 'Off-hand', head: 'Head', body: 'Body', feet: 'Feet',
+};
+
+/** How a piece of gear is drawn on the little person. */
+export type Silhouette =
+  | 'sword' | 'greatsword' | 'dagger' | 'axe' | 'pick' | 'staff' | 'wand'
+  | 'shield_small' | 'shield_tall'
+  | 'cap' | 'helm' | 'hat'
+  | 'tunic' | 'mail' | 'robe'
+  | 'boots';
 
 /** Cell offsets, origin top-left. e.g. a 1x3 sword is [[0,0],[0,1],[0,2]] */
 export type Shape = ReadonlyArray<readonly [number, number]>;
@@ -74,6 +115,10 @@ export interface ItemDef {
   tier: number;
   desc?: string;
   color: string;
+  slot?: EquipSlot;
+  visual?: Silhouette;
+  /** paper-doll tint; falls back to color */
+  tint?: string;
   /** loot only: what monster/activity family it comes from */
   tags?: string[];
   stackable?: boolean;
@@ -151,6 +196,9 @@ export interface VillageNPC {
   name: string;
   line: string;
   priceMod: number;
+  appearance: Appearance;
+  /** flavour that changes with the village mood */
+  mood: string[];
 }
 
 export interface Village {
