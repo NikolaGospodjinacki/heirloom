@@ -1,5 +1,8 @@
-import type { VillageNPC } from '../game/types';
+import type { Appearance, VillageNPC } from '../game/types';
 import { GameState, derived, skillLevel, surname } from '../game/state';
+import { RNG } from '../game/rng';
+import { rollAppearance } from '../game/bloodline';
+import type { TownNPC } from '../game/town';
 import type { Choice, DialogueSpec } from './dialogue';
 
 function npc(st: GameState, role: VillageNPC['role']): VillageNPC {
@@ -100,5 +103,90 @@ export function smithTalk(st: GameState, go: {
       { label: 'Work on my gear', hint: Math.floor(dust) + ' dust', run: go.forge },
       { label: 'Another time', run: go.leave },
     ],
+  };
+}
+
+
+// -------------------------------------------------------------- the innkeep
+
+const INN_NAMES = ['Wilma Ostrun', 'Bardolf Kell', 'Sanna Ostrun', 'Merrit Kell'];
+
+function innkeeper(st: GameState): { name: string; appearance: Appearance } {
+  const r = new RNG(st.village.era * 3407 + 88);
+  return { name: r.pick(INN_NAMES), appearance: rollAppearance(r) };
+}
+
+const RUMOURS_GOOD = [
+  'Caravan came through Tuesday. Sold me two barrels of something drinkable.',
+  'They are patching the north road at last. Only took a decade and a dead mayor.',
+  'A girl from the guild cleared the fen single-handed. Everyone is very tired of hearing about it.',
+];
+const RUMOURS_BAD = [
+  'Nobody rents the upstairs rooms any more. You can have your pick.',
+  'Third family left this month. I stopped learning the new names.',
+  'Something is out past the treeline that the guild will not name. Draw your own conclusion.',
+];
+
+export function innTalk(st: GameState, cost: number, go: {
+  rest: () => void; rumour: () => void; leave: () => void;
+}): DialogueSpec {
+  const k = innkeeper(st);
+  const rich = st.village.preset === 'thriving';
+  const lines = [
+    rich
+      ? 'Evening. Fire is lit, stew is on, and the roof has stopped leaking. Sit.'
+      : 'Evening. Fire is lit. That is most of what I can promise.',
+  ];
+  if (st.hp < derived(st).maxHp * 0.5) {
+    lines.push('You look like something dragged you home. Take a bed before you fall over.');
+  }
+  return {
+    name: k.name, role: 'The Gilded Sow', appearance: k.appearance, lines,
+    tint: '#7a5a3a',
+    choices: [
+      { label: 'A bed for the night', hint: cost + 'g \u00b7 full recovery', run: go.rest },
+      { label: 'Heard anything?', run: go.rumour },
+      { label: 'Not tonight', run: go.leave },
+    ],
+  };
+}
+
+export function innRumour(st: GameState, cost: number, go: {
+  rest: () => void; leave: () => void;
+}): DialogueSpec {
+  const k = innkeeper(st);
+  const r = new RNG((Date.now() / 1000) | 0);
+  const pool = st.village.preset === 'thriving' ? RUMOURS_GOOD : RUMOURS_BAD;
+  return {
+    name: k.name, role: 'The Gilded Sow', appearance: k.appearance,
+    lines: [r.pick(pool)],
+    tint: '#7a5a3a',
+    choices: [
+      { label: 'A bed for the night', hint: cost + 'g', run: go.rest },
+      { label: 'Goodnight', run: go.leave },
+    ],
+  };
+}
+
+// ------------------------------------------------------------- the townsfolk
+
+const ROLE_LABEL: Record<string, string> = {
+  guard: 'Gate Watch', kid: 'Village Child', elder: 'Village Elder',
+  merchant: 'Stallholder', folk: 'Townsfolk', cat: 'A Cat',
+};
+
+export function townsfolkTalk(n: TownNPC, st: GameState, leave: () => void): DialogueSpec {
+  const lines = [...n.lines];
+  // Every so often someone brings up the family, which is the whole point.
+  if (st.generation > 1 && Math.random() < 0.4 && n.kind !== 'cat') {
+    lines.push('You have the look of the old ' + surname(st.hero.name) + '. Same walk.');
+  }
+  return {
+    name: n.kind === 'cat' ? n.name : n.name,
+    role: ROLE_LABEL[n.kind] ?? 'Townsfolk',
+    appearance: n.appearance,
+    lines,
+    tint: n.kind === 'guard' ? '#4a5f8a' : n.kind === 'kid' ? '#7a8a4a' : '#6a5a44',
+    choices: [{ label: 'Take care', run: leave }],
   };
 }

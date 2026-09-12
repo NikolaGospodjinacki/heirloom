@@ -73,16 +73,17 @@ export type ItemKind =
   | 'consumable' | 'loot' | 'gem' | 'tool';
 
 /** The five paper-doll slots. Everything else lives loose in the pack. */
-export type EquipSlot = 'weapon' | 'offhand' | 'head' | 'body' | 'feet';
-export const EQUIP_SLOTS: EquipSlot[] = ['weapon', 'offhand', 'head', 'body', 'feet'];
+export type EquipSlot = 'weapon' | 'offhand' | 'head' | 'body' | 'feet' | 'tool';
+export const EQUIP_SLOTS: EquipSlot[] = ['weapon', 'offhand', 'head', 'body', 'feet', 'tool'];
 export const SLOT_NAMES: Record<EquipSlot, string> = {
-  weapon: 'Weapon', offhand: 'Off-hand', head: 'Head', body: 'Body', feet: 'Feet',
+  weapon: 'Weapon', offhand: 'Off-hand', head: 'Head', body: 'Body', feet: 'Feet', tool: 'Tool',
 };
 
 /** How a piece of gear is drawn on the little person. */
 export type Silhouette =
   | 'sword' | 'greatsword' | 'dagger' | 'axe' | 'pick' | 'staff' | 'wand'
   | 'shield_small' | 'shield_tall'
+  | 'hatchet' | 'miner_pick' | 'sickle'
   | 'cap' | 'helm' | 'hat'
   | 'tunic' | 'mail' | 'robe'
   | 'boots';
@@ -92,6 +93,9 @@ export type Shape = ReadonlyArray<readonly [number, number]>;
 
 export interface ItemMods {
   atk?: number;
+  /** tools only: how fast this bites wood / stone */
+  chop?: number;
+  mine?: number;
   spellPower?: number;
   armor?: number;
   hp?: number;

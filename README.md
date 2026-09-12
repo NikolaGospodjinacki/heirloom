@@ -23,7 +23,8 @@ npm run dev
 | `WASD` | walk |
 | mouse | aim |
 | left click | attack |
-| `Space` | dash (i-frames, costs stamina and a charge) |
+| `Space` | jump (airborne clears anything swinging at knee height) |
+| `Shift` / right click | dash (i-frames, costs stamina and a charge) |
 | `E` | enter a building / leave a zone |
 | `Tab` | kit — paper doll and pack |
 | `C` | character — attributes and skills |
@@ -34,14 +35,33 @@ npm run dev
 
 1. **Town** — walk around a 3/4 top-down village.
 2. **Guild** — a portrait-and-textbox conversation with the guildmaster, then the board:
-   cull N boars, fell N trees, mine N ore, or a boss hunt. The shopkeeper and smith work the
-   same way, and they remember your family — NPCs are regenerated each era as their own
-   descendants, inheriting their parent's surname and most of their face.
+   cull N boars, fell N trees, mine N ore, or a boss hunt. The shopkeeper, smith and
+   innkeeper work the same way, and they remember your family — NPCs are regenerated each
+   era as their own descendants, inheriting their parent's surname and most of their face.
+   Everyone else in town — kids, elders, stallholders, the gate watch, the cat — has a
+   couple of lines and a face of their own.
 3. **Gate** — pick a zone and travel.
 4. **Zone** — real-time combat. The same swing chops trees and breaks rocks. Drops fall on
    the ground, magnetise toward you, and land in your pack if there is room.
 5. **Back to town** — sell, enhance, work the homestead, turn the contract in.
 6. **Die** — and generation +1 begins.
+
+## The town
+
+The starting village is the cosy part, and it is built like one: a **city gate** with a
+stone wall, a raised portcullis and two guards who will talk to you; a **cobbled square**
+with a well, market stalls and flower beds; a **shop street** of connected timber-framed
+townhouses (bakery, general store, apothecary, smithy, tailor) with lit windows and smoking
+chimneys; **the Gilded Sow**, where a bed restores everything and the innkeep trades
+rumours; the **Adventurers Guild** with a fenced **training yard** of practice dummies and
+weapon racks; and your **homestead** with its garden rows and laundry line.
+
+It is lit for late afternoon: lantern glow pools on the cobbles, motes drift through the
+air, banners sway, and a golden-hour wash sits over the whole thing. Buildings and walls
+are solid — you walk around them, sliding along instead of sticking.
+
+A thriving village has more stalls, more people, greener trees and flowers in the hedges. A
+struggling one is emptier and greyer, and everybody says so.
 
 ## Systems
 
@@ -64,10 +84,26 @@ bottom of the screen names the discipline you are currently training, and a leve
 particles and shows the new number. Levelling Vigor raises your max health mid-fight and
 you watch the bar grow.
 
-**Movement and techniques (`K`).** Nine techniques on a small tree: extra dash charges,
-longer i-frames, momentum, a dash that knocks enemies down, and finally Blink. They cost
-**Memory**, earned by living a life worth remembering, and they are **bloodline knowledge** —
-learned once, never lost. This is the meta-progression that is not a stat.
+**Tools have their own slot.** Chopping and mining are driven by whatever is in the **tool**
+slot, never by your weapon — so a wizard with a pickaxe mines exactly as well as a warrior
+with one, without holstering the staff. Walking up to a tree turns your attack into a
+harvest swing automatically. Bare hands work, barely.
+
+**Movement and techniques (`K`).** Twelve techniques on a small tree: the vault, extra dash
+charges, longer i-frames, momentum, a dash that knocks enemies down, a pounce that hits
+harder out of the air, and finally Blink. They cost **Memory**, earned by living a life
+worth remembering, and they are **bloodline knowledge** — learned once, never lost. This is
+the meta-progression that is not a stat.
+
+Dashes are burst mobility, not flight: 26 stamina each, a hard gap between them, and
+stamina stops regenerating for a moment afterwards. Chaining three is a decision, not a
+default.
+
+**Casting has a cost.** A bolt roots you to a shuffle for a quarter of a second while a
+ring fills under your feet, drains a real bite of a small mana pool, and travels slowly
+enough to miss. Staves reach about 170px, not across the field. And half the bestiary now
+shoots back — slingers, spitters and hexers keep their distance and punish standing still,
+while wolves telegraph a leap that closes the gap.
 
 **Feel.** Hit stop on every impact, screen shake scaled to what caused it, knockback and
 stun, squash on the struck enemy, particle bursts for hits, crits, kills, chops and dashes,
@@ -139,7 +175,7 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
   paper-doll layering is in place for when sprites land.
 - No collision with buildings, trees or rocks — you walk through everything.
 - No sound at all. This is the biggest missing multiplier on how the hits feel.
-- Monster AI is chase-and-swing with a telegraph ring. No packs, no ranged enemies.
+- Monster AI is chase, shoot, or leap, each with a telegraph. No packs or formations yet.
 - Boss contracts spawn the boss but there is no arena or fight structure.
 - The classes differ by starting gear, stat weights and weapon style; no class abilities
   beyond the shared dash.
@@ -149,7 +185,7 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
 ## Next up (rough order)
 
 1. Sound — hits, footsteps, level-ups, a town theme and a field theme.
-2. Collision, so terrain is something you move around rather than through.
+2. Collision in the field too — town is solid, zones are not yet.
 3. Class abilities on a hotbar so warrior and wizard actually play differently.
 4. Adjacency bonuses in the pack — the other half of the Backpack Battles idea.
 5. Sprites, replacing primitives layer by layer behind the same paper-doll API.

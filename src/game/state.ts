@@ -27,7 +27,7 @@ export interface Lifetime {
 export type Equipment = Record<EquipSlot, Item | null>;
 
 export function emptyEquipment(): Equipment {
-  return { weapon: null, offhand: null, head: null, body: null, feet: null };
+  return { weapon: null, offhand: null, head: null, body: null, feet: null, tool: null };
 }
 
 export interface GameState {
@@ -103,8 +103,8 @@ export function newGame(classId: ClassId): GameState {
   const equipped = emptyEquipment();
 
   const starter = classId === 'warrior'
-    ? ['shortsword', 'padded_tunic']
-    : ['apprentice_staff', 'wizard_hat'];
+    ? ['shortsword', 'padded_tunic', 'axe']
+    : ['apprentice_staff', 'wizard_hat', 'axe'];
   for (const d of starter) {
     const it = makeItem(r, d, 'common');
     const slot = slotOf(it);
@@ -121,7 +121,7 @@ export function newGame(classId: ClassId): GameState {
     hp: 1, mana: 1, stamina: 1,
     lifetime: { kills: 0, questsDone: 0, bosses: 0, goldEarned: 0, treesFelled: 0, rocksMined: 0, born: Date.now() },
     legacy, generation: 1, donated: 0,
-    techniques: ['dash'], memory: 1,
+    techniques: ['dash', 'jump'], memory: 1,
     log: [], lastRealTick: Date.now(), epitaphs: [],
   };
   const d = derived(st);
@@ -160,11 +160,19 @@ export interface Derived {
   slayMult: number;
   goldMult: number;
   boltCost: number;
+  /** seconds rooted at the start of a cast */
+  castTime: number;
+  manaRegen: number;
   hpRegen: number;
   staminaRegen: number;
   chopMult: number;
   mineMult: number;
+  /** how hard the equipped tool bites; 0 means bare hands */
+  chopPower: number;
+  minePower: number;
+  tool: Item | null;
   dash: DashProfile;
+  jump: { height: number; duration: number; staminaCost: number; pounce: boolean };
 }
 
 export function skillLevel(st: GameState, k: SkillKey): number {
@@ -202,6 +210,8 @@ export function derived(st: GameState): Derived {
   }
 
   const weapon = st.equipped.weapon;
+  const tool = st.equipped.tool;
+  const toolMods = tool ? itemMods(tool) : null;
   const t = h.trait.id;
   const L = (k: SkillKey) => skillLevel(st, k);
   const vigor = L('vigor'), blade = L('blade'), sorcery = L('sorcery');
@@ -216,7 +226,7 @@ export function derived(st: GameState): Derived {
   const maxStamina = 60 + stats.agi * 2 + foot * 2;
 
   let atkTotal = atk + stats.str * 0.9 + blade * 0.9;
-  let spTotal = sp + stats.int * 1.1 + sorcery * 1.1;
+  let spTotal = sp + stats.int * 0.92 + sorcery * 0.95;
   if (t === 'brute') { atkTotal *= 1.3; spTotal *= 0.75; }
   if (t === 'mageborn') { atkTotal *= 0.85; spTotal *= 1.35; }
 
@@ -263,12 +273,23 @@ export function derived(st: GameState): Derived {
     beastMult: 1 + hunting * 0.04,
     slayMult: 1 + slaying * 0.04,
     goldMult: 1 + slaying * 0.03,
-    boltCost: Math.max(1.5, 4 - sorcery * 0.08),
+    boltCost: Math.max(4.5, 10 - sorcery * 0.16),
+    castTime: Math.max(0.13, 0.26 - sorcery * 0.004),
+    manaRegen: 0.9 + stats.int * 0.07 + sorcery * 0.05,
     hpRegen: 0.6 + vigor * 0.09,
-    staminaRegen: 16 + foot * 0.9,
+    staminaRegen: 11 + foot * 0.6,
     chopMult: 1 + L('woodcutting') * 0.08,
     mineMult: 1 + L('mining') * 0.08,
+    chopPower: toolMods?.chop ?? 0,
+    minePower: toolMods?.mine ?? 0,
+    tool,
     dash: dashProfile(st.techniques, foot),
+    jump: {
+      height: st.techniques.includes('high_vault') ? 44 : 32,
+      duration: st.techniques.includes('high_vault') ? 0.52 : 0.42,
+      staminaCost: 12,
+      pounce: st.techniques.includes('pounce'),
+    },
   };
 }
 
@@ -461,6 +482,8 @@ export function load(): GameState | null {
       if (!st.hero.skills[k]) st.hero.skills[k] = { xp: 0 };
     }
     if (!st.equipped) st.equipped = emptyEquipment();
+    if (st.equipped.tool === undefined) (st.equipped as Equipment).tool = null;
+    if (!st.techniques.includes('jump')) st.techniques.push('jump');
     if (!st.techniques) st.techniques = ['dash'];
     if (typeof st.memory !== 'number') st.memory = 0;
     st.lastRealTick = Date.now();

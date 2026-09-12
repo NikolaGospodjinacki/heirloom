@@ -5,6 +5,10 @@ export interface MonsterDef {
   id: string;
   name: string;
   family: 'beast' | 'ooze' | 'humanoid' | 'undead' | 'boss';
+  /** ranged attackers fire a projectile instead of swinging */
+  ranged?: { speed: number; color: string; size: number };
+  /** telegraphed leap that closes distance before the swing */
+  lunge?: { range: number; speed: number };
   hp: number;
   atk: number;
   armor: number;
@@ -40,6 +44,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
     skill: 'slaying', danger: 1,
   }),
   wolf: M({
+    lunge: { range: 190, speed: 430 },
     id: 'wolf', name: 'Grey Wolf', family: 'beast', hp: 44, atk: 9, armor: 2, speed: 88, size: 15,
     color: '#7d8089', accent: '#d9dde4', aggro: 230, attackRange: 26, attackCd: 1.0, xp: 22,
     gold: [4, 12], drops: [['wolf_pelt', 0.55], ['boar_tusk', 0.15]], gearChance: 0.12,
@@ -62,6 +67,27 @@ export const MONSTERS: Record<string, MonsterDef> = {
     color: '#8a8f7d', accent: '#4d3f52', aggro: 210, attackRange: 30, attackCd: 1.3, xp: 46,
     gold: [10, 26], drops: [['rotten_fang', 0.5], ['gem', 0.12]], gearChance: 0.3,
     skill: 'slaying', danger: 4,
+  }),
+  spitter: M({
+    id: 'spitter', name: 'Bile Spitter', family: 'ooze', hp: 30, atk: 8, armor: 1, speed: 34, size: 14,
+    color: '#7fae52', accent: '#d6f0a8', aggro: 300, attackRange: 250, attackCd: 2.0, xp: 18,
+    gold: [3, 9], drops: [['slime_core', 0.6]], gearChance: 0.08,
+    skill: 'slaying', danger: 2,
+    ranged: { speed: 250, color: '#a8e05f', size: 7 },
+  }),
+  archer: M({
+    id: 'archer', name: 'Goblin Slinger', family: 'humanoid', hp: 34, atk: 11, armor: 2, speed: 74, size: 14,
+    color: '#7f9c58', accent: '#c96b3a', aggro: 340, attackRange: 290, attackCd: 1.7, xp: 26,
+    gold: [7, 18], drops: [['goblin_ear', 0.55], ['iron_ore', 0.12]], gearChance: 0.18,
+    skill: 'slaying', danger: 3,
+    ranged: { speed: 330, color: '#e0d0a0', size: 5 },
+  }),
+  hexer: M({
+    id: 'hexer', name: 'Barrow Hexer', family: 'undead', hp: 58, atk: 17, armor: 4, speed: 52, size: 16,
+    color: '#6a5c86', accent: '#b8a0e0', aggro: 330, attackRange: 270, attackCd: 2.1, xp: 52,
+    gold: [14, 32], drops: [['rotten_fang', 0.5], ['gem', 0.16]], gearChance: 0.3,
+    skill: 'slaying', danger: 4,
+    ranged: { speed: 210, color: '#c39bff', size: 8 },
   }),
   fangmaw: M({
     id: 'fangmaw', name: 'Fangmaw, Terror of the Fen', family: 'boss', hp: 320, atk: 24, armor: 8, speed: 66, size: 26,
@@ -98,28 +124,28 @@ export const ZONES: Record<string, ZoneDef> = {
   meadow: {
     id: 'meadow', name: 'Kestrel Meadow', desc: 'Boars, bees and long grass. Where every apprentice starts.',
     w: 34, h: 34, ground: '#5f8c4a', ground2: '#6c9a53', density: 12, trees: 22, rocks: 8, danger: 1,
-    spawns: [['boar', 0.6], ['slime', 0.4]],
+    spawns: [['boar', 0.5], ['slime', 0.3], ['spitter', 0.2]],
     treeLoot: [['log', 0.9], ['heartwood', 0.05]],
     rockLoot: [['iron_ore', 0.8], ['gem', 0.05], ['silver_ore', 0.12]],
   },
   woods: {
     id: 'woods', name: 'Thornwood', desc: 'Old trees, older wolves. Goblins keep a camp somewhere in here.',
     w: 38, h: 38, ground: '#3f6b3c', ground2: '#4a7a44', density: 16, trees: 46, rocks: 10, danger: 2,
-    spawns: [['wolf', 0.45], ['goblin', 0.4], ['boar', 0.15]],
+    spawns: [['wolf', 0.35], ['goblin', 0.3], ['archer', 0.2], ['boar', 0.15]],
     treeLoot: [['log', 0.85], ['heartwood', 0.14]],
     rockLoot: [['iron_ore', 0.7], ['silver_ore', 0.2], ['gem', 0.08]],
   },
   fen: {
     id: 'fen', name: 'Mireholt Fen', desc: 'Bandit country. Wet, cold, and worth good coin.',
     w: 40, h: 40, ground: '#4d5f4a', ground2: '#586b52', density: 18, trees: 20, rocks: 16, danger: 3,
-    spawns: [['bandit', 0.45], ['ghoul', 0.3], ['wolf', 0.25]],
+    spawns: [['bandit', 0.34], ['ghoul', 0.22], ['wolf', 0.22], ['archer', 0.22]],
     treeLoot: [['log', 0.7], ['heartwood', 0.25]],
     rockLoot: [['iron_ore', 0.55], ['silver_ore', 0.3], ['gem', 0.14]],
   },
   barrows: {
     id: 'barrows', name: 'The Sunken Barrows', desc: 'Nobody who goes deep comes back the same. Or at all.',
     w: 42, h: 42, ground: '#4a4550', ground2: '#544e5c', density: 22, trees: 8, rocks: 24, danger: 5,
-    spawns: [['ghoul', 0.6], ['bandit', 0.25], ['goblin', 0.15]],
+    spawns: [['ghoul', 0.4], ['hexer', 0.3], ['bandit', 0.18], ['archer', 0.12]],
     treeLoot: [['log', 0.5], ['heartwood', 0.4]],
     rockLoot: [['silver_ore', 0.45], ['gem', 0.28], ['iron_ore', 0.27]],
   },
@@ -198,5 +224,8 @@ export const SHOP_STOCK_POOL = [
   'leather_cap', 'padded_tunic', 'boots', 'copper_ring', 'bone_charm', 'wizard_hat',
 ];
 export const SHOP_STOCK_RICH = [
-  'greatsword', 'runewood_staff', 'kite_shield', 'iron_helm', 'chainmail', 'robe', 'heart_locket',
+  'greatsword', 'runewood_staff', 'kite_shield', 'iron_helm', 'chainmail', 'robe',
+  'heart_locket', 'battleaxe', 'prospectors_kit',
 ];
+/** The store always keeps the basic tools on the shelf. Nobody should be stuck. */
+export const SHOP_STAPLES = ['axe', 'pickaxe'];

@@ -23,16 +23,28 @@ def({ defId: 'dagger', slot: 'weapon', visual: 'dagger', name: 'Dagger', kind: '
   attack: 'thrust', mods: { atk: 4, range: 26, attackSpeed: 1.6, critChance: 0.1 }, desc: 'Quick and mean.' });
 def({ defId: 'greatsword', slot: 'weapon', visual: 'greatsword', name: 'Greatsword', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 70, color: '#aeb6c4',
   attack: 'swing', mods: { atk: 16, range: 44, attackSpeed: 0.62 }, desc: 'Takes both hands and a grudge.' });
-def({ defId: 'axe', slot: 'weapon', visual: 'axe', name: 'Woodsman Axe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#b98a52',
-  attack: 'swing', mods: { atk: 9, range: 32, attackSpeed: 0.85 }, desc: 'Fells trees twice as fast.' });
-def({ defId: 'pickaxe', slot: 'weapon', visual: 'pick', name: 'Pickaxe', kind: 'weapon', shape: S.ell, tier: 1, baseValue: 34, color: '#8d94a3',
-  attack: 'swing', mods: { atk: 6, range: 30, attackSpeed: 0.9 }, desc: 'Bites stone twice as fast.' });
+def({ defId: 'battleaxe', slot: 'weapon', visual: 'axe', name: 'Battleaxe', kind: 'weapon', shape: S.ell, tier: 2, baseValue: 58, color: '#b98a52',
+  attack: 'swing', mods: { atk: 14, range: 34, attackSpeed: 0.7 }, desc: 'Heavy, wide, unsubtle.' });
+
+// ------------------------------------------------------------------ tools
+// Tools live in their own slot, so a wizard can still mine without holstering
+// the staff. Harvesting always uses the tool, never the weapon.
+def({ defId: 'axe', slot: 'tool', visual: 'hatchet', name: 'Woodsman Axe', kind: 'tool', shape: S.ell, tier: 1, baseValue: 30, color: '#b98a52',
+  mods: { chop: 2.4, mine: 0.5, atk: 2 }, desc: 'For trees. Swing near one and it does the work.' });
+def({ defId: 'pickaxe', slot: 'tool', visual: 'miner_pick', name: 'Pickaxe', kind: 'tool', shape: S.ell, tier: 1, baseValue: 30, color: '#8d94a3',
+  mods: { chop: 0.5, mine: 2.4, atk: 2 }, desc: 'For stone. Swing near a rock and it does the work.' });
+def({ defId: 'prospectors_kit', slot: 'tool', visual: 'sickle', name: "Prospector's Kit", kind: 'tool', shape: S.sq2, tier: 2, baseValue: 96, color: '#c8a24b',
+  mods: { chop: 2.2, mine: 2.2, atk: 1 }, desc: 'Cuts and breaks. Heavier to carry than either alone.' });
+def({ defId: 'runed_axe', slot: 'tool', visual: 'hatchet', name: 'Runed Felling Axe', kind: 'tool', shape: S.ell, tier: 3, baseValue: 180, color: '#7fc2a0',
+  mods: { chop: 4.4, mine: 0.8, atk: 3 }, desc: 'The wood parts for it.' });
+def({ defId: 'deepiron_pick', slot: 'tool', visual: 'miner_pick', name: 'Deepiron Pick', kind: 'tool', shape: S.ell, tier: 3, baseValue: 180, color: '#8fa8c4',
+  mods: { chop: 0.8, mine: 4.4, atk: 3 }, desc: 'Rings like a bell and does not chip.' });
 def({ defId: 'apprentice_staff', slot: 'weapon', visual: 'staff', name: 'Apprentice Staff', kind: 'weapon', shape: S.v3, tier: 1, baseValue: 30, color: '#8f6ac2',
-  attack: 'bolt', mods: { atk: 3, spellPower: 8, range: 190, attackSpeed: 0.9 }, desc: 'Hums when it rains.' });
+  attack: 'bolt', mods: { atk: 3, spellPower: 8, range: 168, attackSpeed: 0.78 }, desc: 'Hums when it rains.' });
 def({ defId: 'runewood_staff', slot: 'weapon', visual: 'staff', name: 'Runewood Staff', kind: 'weapon', shape: S.v4, tier: 2, baseValue: 82, color: '#6f4fd6',
-  attack: 'bolt', mods: { atk: 4, spellPower: 17, range: 220, attackSpeed: 0.85 }, desc: 'Old words, still angry.' });
+  attack: 'bolt', mods: { atk: 4, spellPower: 15, range: 186, attackSpeed: 0.74 }, desc: 'Old words, still angry.' });
 def({ defId: 'wand', slot: 'weapon', visual: 'wand', name: 'Hazel Wand', kind: 'weapon', shape: S.v2, tier: 1, baseValue: 22, color: '#a37ddb',
-  attack: 'bolt', mods: { atk: 2, spellPower: 5, range: 165, attackSpeed: 1.5 }, desc: 'Chatty little thing.' });
+  attack: 'bolt', mods: { atk: 2, spellPower: 4, range: 150, attackSpeed: 1.25 }, desc: 'Chatty little thing.' });
 
 // ---------------------------------------------------------------- armour
 def({ defId: 'buckler', slot: 'offhand', visual: 'shield_small', name: 'Buckler', kind: 'offhand', shape: S.sq2, tier: 1, baseValue: 28, color: '#8a6f4a',
@@ -129,7 +141,8 @@ function roundMods(m: ItemMods): ItemMods {
     if (k === 'stats') continue;
     const v = m[k] as number | undefined;
     if (v === undefined) continue;
-    out[k] = (k === 'critChance' || k === 'attackSpeed' ? Math.round(v * 100) / 100 : Math.round(v)) as never;
+    const fine = k === 'critChance' || k === 'attackSpeed' || k === 'chop' || k === 'mine';
+    out[k] = (fine ? Math.round(v * 100) / 100 : Math.round(v)) as never;
   }
   if (out.stats && Object.keys(out.stats).length === 0) delete out.stats;
   return out;
@@ -155,9 +168,11 @@ export function makeItem(r: RNG, defId: string, rarity?: Rarity, count = 1): Ite
   const rar: Rarity = rarity ?? (plain ? 'common' : rollRarity(r));
   const mult = RARITY_MULT[rar];
   let mods: ItemMods = mergeMods({}, d.mods ?? {}, plain ? 1 : mult);
-  // range and base swing speed are weapon identity, not rarity scaling
+  // range, swing speed and tool bite are identity, not rarity scaling
   if (d.mods?.range) mods.range = d.mods.range;
   if (d.mods?.attackSpeed) mods.attackSpeed = d.mods.attackSpeed;
+  if (d.mods?.chop) mods.chop = d.mods.chop;
+  if (d.mods?.mine) mods.mine = d.mods.mine;
 
   let name = d.name;
   const affixCount = { common: 0, uncommon: 1, rare: 1, epic: 2, legendary: 3 }[rar];
@@ -217,7 +232,8 @@ export function shapeSize(shape: Shape, rot: number): [number, number] {
 
 export function isGear(it: Item): boolean {
   const k = ITEM_DEFS[it.defId].kind;
-  return k === 'weapon' || k === 'offhand' || k === 'head' || k === 'body' || k === 'feet' || k === 'trinket';
+  return k === 'weapon' || k === 'offhand' || k === 'head' || k === 'body'
+    || k === 'feet' || k === 'trinket' || k === 'tool';
 }
 
 /** Gear that goes in a paper-doll slot rather than loose in the pack. */

@@ -77,10 +77,17 @@ export interface GearLook {
   head: GearPiece | null;
   body: GearPiece | null;
   feet: GearPiece | null;
+  tool: GearPiece | null;
 }
-export const NO_GEAR: GearLook = { weapon: null, offhand: null, head: null, body: null, feet: null };
+export const NO_GEAR: GearLook = {
+  weapon: null, offhand: null, head: null, body: null, feet: null, tool: null,
+};
 
 export interface HeroDraw {
+  /** height off the ground, for jumps */
+  z?: number;
+  /** 0..1 while a spell is winding up */
+  cast?: number;
   hurt?: number;
   /** seconds left in the swing, 0 when idle */
   swing?: number;
@@ -144,6 +151,28 @@ function drawWeapon(ctx: CanvasRenderingContext2D, p: GearPiece, ang: number, sc
       ctx.fillStyle = c;
       ctx.beginPath(); ctx.arc(19 * scale, 0, 4, 0, Math.PI * 2); ctx.fill();
       break;
+    case 'hatchet':
+      ctx.fillStyle = '#6b4a2a'; ctx.fillRect(2, -1.5, 16 * scale, 3);
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.moveTo(13 * scale, -6.5); ctx.lineTo(20 * scale, -2.5);
+      ctx.lineTo(20 * scale, 2.5); ctx.lineTo(13 * scale, 6.5);
+      ctx.closePath(); ctx.fill();
+      break;
+    case 'miner_pick':
+      ctx.fillStyle = '#6b4a2a'; ctx.fillRect(2, -1.5, 15 * scale, 3);
+      ctx.strokeStyle = c; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(11 * scale, -7.5); ctx.quadraticCurveTo(19 * scale, 0, 11 * scale, 7.5);
+      ctx.stroke();
+      break;
+    case 'sickle':
+      ctx.fillStyle = '#6b4a2a'; ctx.fillRect(2, -1.5, 12 * scale, 3);
+      ctx.strokeStyle = c; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(13 * scale, -4, 6.5, 0.5, 3.4);
+      ctx.stroke();
+      break;
     default:
       break;
   }
@@ -180,8 +209,25 @@ export function drawHero(
   const hurt = o.hurt ?? 0;
   const swing = o.swing ?? 0;
   const swingMax = o.swingMax ?? 0.2;
+  const air = o.z ?? 0;
 
-  shadow(ctx, wx, wy, 12, 0.3);
+  // the shadow staying put on the ground is what sells the hop
+  shadow(ctx, wx, wy, 12 * (1 - Math.min(0.45, air / 90)), 0.3 * (1 - Math.min(0.5, air / 80)));
+
+  if (o.cast && o.cast > 0) {
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(1, 0.42);
+    ctx.strokeStyle = 'rgba(157,123,255,0.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * o.cast);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(157,123,255,0.22)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
 
   const bob = Math.sin(walkT * 12) * 2.2;
   const H = 42 * app.height;
@@ -190,7 +236,7 @@ export function drawHero(
   const cosF = Math.cos(facing);
 
   ctx.save();
-  ctx.translate(sx, sy - bob);
+  ctx.translate(sx, sy - bob - air);
 
   if (o.iframes && o.iframes > 0) ctx.globalAlpha = 0.45 + Math.sin(performance.now() * 0.05) * 0.25;
   else if (hurt > 0) ctx.globalAlpha = 0.55 + Math.sin(hurt * 70) * 0.35;
@@ -202,6 +248,17 @@ export function drawHero(
     ? facing - 1.25 + swingP * 2.5
     : restAng;
   const shieldAng = facing - 1.0;
+
+  // ---- the tool rides on your back unless it is doing the work
+  const harvesting = swingP >= 0 && !gear.weapon;
+  if (gear.tool && !harvesting) {
+    ctx.save();
+    ctx.translate(0, -H * 0.55);
+    ctx.rotate(-0.9);
+    ctx.globalAlpha = 0.9;
+    drawWeapon(ctx, gear.tool, 0, 0.72);
+    ctx.restore();
+  }
 
   // ---- things drawn BEHIND the body when facing away
   if (faceAway && gear.weapon) drawWeapon(ctx, gear.weapon, weaponAng, 1);

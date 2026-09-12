@@ -21,3 +21,9 @@ export function gearLook(equipped: Record<string, Item | null>): GearLook {
   for (const s of EQUIP_SLOTS) out[s] = piece(equipped[s] ?? null);
   return out;
 }
+
+/** What the hand actually swings: the weapon, or the tool when harvesting. */
+export function swingPiece(look: GearLook, harvesting: boolean): GearLook {
+  if (!harvesting || !look.tool) return look;
+  return { ...look, weapon: look.tool };
+}

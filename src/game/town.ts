@@ -1,259 +1,1026 @@
 import { TS, shadow } from '../render/view';
-import { drawGround, drawHero, roundRect } from '../render/draw';
+import { drawGround, drawHero, roundRect, shade } from '../render/draw';
 import { gearLook } from '../render/look';
+import { RNG } from './rng';
 import type { GameState } from './state';
-import type { Village } from './types';
+import type { Appearance, Village } from './types';
+import { rollAppearance } from './bloodline';
 
-export type BuildingId = 'guild' | 'shop' | 'smith' | 'home' | 'gate';
+export type BuildingId =
+  | 'guild' | 'shop' | 'smith' | 'home' | 'gate' | 'inn'
+  | 'bakery' | 'tailor' | 'apothecary' | 'house';
 
 export interface Building {
   id: BuildingId;
+  key: string;
   name: string;
   x: number; y: number;
-  w: number; d: number; h: number;
+  w: number; d: number;
   color: string;
   roof: string;
-  prompt: string;
+  /** null for flavour buildings you cannot enter */
+  prompt: string | null;
+  sign?: string;
+  /** lit windows at dusk */
+  warm: boolean;
+  storeys: number;
 }
+
+export type PropKind =
+  | 'lantern' | 'stall' | 'barrel' | 'crate' | 'flowerbed' | 'bench' | 'fence'
+  | 'dummy' | 'rack' | 'signpost' | 'cart' | 'laundry' | 'bush' | 'tree'
+  | 'sapling' | 'pot' | 'haybale' | 'well' | 'banner' | 'crops';
+
+export interface Prop {
+  kind: PropKind;
+  x: number; y: number;
+  variant: number;
+  /** fence and laundry run to a second point */
+  x2?: number; y2?: number;
+  color?: string;
+}
+
+export type NpcKind = 'guard' | 'kid' | 'elder' | 'merchant' | 'folk' | 'cat';
+
+export interface TownNPC {
+  id: string;
+  kind: NpcKind;
+  name: string;
+  x: number; y: number;
+  hx: number; hy: number;
+  homeR: number;
+  t: number;
+  facing: number;
+  walkT: number;
+  speed: number;
+  appearance: Appearance;
+  lines: string[];
+  /** guards hold their post */
+  fixed: boolean;
+}
+
+export interface Rect { x: number; y: number; w: number; h: number }
+
+export interface Mote { x: number; y: number; vx: number; vy: number; t: number; life: number; s: number }
 
 export interface Town {
   w: number; h: number;
   tiles: Uint8Array;
   buildings: Building[];
+  props: Prop[];
+  npcs: TownNPC[];
+  colliders: Rect[];
+  motes: Mote[];
+  roads: { x1: number; y1: number; x2: number; y2: number; w: number }[];
   px: number; py: number;
   facing: number;
   walkT: number;
-  decor: { x: number; y: number; kind: number }[];
-  npcs: { x: number; y: number; t: number; hue: string; home: [number, number] }[];
+  time: number;
+  gateX: number; gateY: number;
 }
 
-const LAYOUT: Omit<Building, 'x' | 'y'>[] = [
-  { id: 'guild', name: 'Adventurers Guild', w: 150, d: 130, h: 96, color: '#8a6a4a', roof: '#8c4a3f', prompt: 'quest board' },
-  { id: 'shop', name: 'General Store', w: 130, d: 120, h: 78, color: '#7d7050', roof: '#4f6b7a', prompt: 'buy & sell' },
-  { id: 'smith', name: 'Smithy', w: 120, d: 110, h: 72, color: '#6d6258', roof: '#5a4a44', prompt: 'enhance gear' },
-  { id: 'home', name: 'Your Homestead', w: 140, d: 120, h: 80, color: '#7a6a52', roof: '#6a7d4a', prompt: 'homestead & chest' },
-  { id: 'gate', name: 'Village Gate', w: 60, d: 150, h: 110, color: '#6b6257', roof: '#4a443c', prompt: 'set out' },
+export type Interact =
+  | { kind: 'building'; b: Building }
+  | { kind: 'npc'; n: TownNPC }
+  | null;
+
+// --------------------------------------------------------------- population
+
+const KID_NAMES = ['Pim', 'Nell', 'Tobin', 'Wren', 'Bo', 'Sissel', 'Fen'];
+const ELDER_NAMES = ['Old Marta', 'Grandpa Ove', 'Granny Hild', 'Old Bardolf'];
+const FOLK_NAMES = ['Ilsa', 'Corin', 'Rue', 'Halvard', 'Mera', 'Tam', 'Josa', 'Peret'];
+const GUARD_NAMES = ['Sergeant Bram', 'Watchman Ode', 'Corporal Yew', 'Guardsman Pell'];
+
+const KID_LINES = [
+  ['You have a real sword! Can I hold it? No? Fine.', 'When I grow up I am going to fight a dragon. A small one first.'],
+  ['I found a frog by the fountain and now I cannot find the frog.', 'If you see a frog, it is mine.'],
+  ['Mum says adventurers all die young. You look fine to me!'],
+  ['Bet you cannot jump over the whole fountain. Bet you.'],
+  ['My sister went to the guild and came back with a scar and a hat. I want the hat.'],
+];
+const ELDER_LINES = [
+  ['I have watched four of your family walk out that gate.', 'Three came back. Sit down some time, will you?'],
+  ['The bell used to ring at dusk. Nobody rings it now.', 'Not for any reason. We just stopped.'],
+  ['My knees tell the weather better than the almanac. Rain by evening.'],
+  ['Eat something before you go. You all forget to eat.'],
+];
+const FOLK_LINES = [
+  ['Morning. Roads have been quiet, which is either good news or the other kind.'],
+  ['If you are heading out, the meadow is thick with boar this season.'],
+  ['My husband swears he saw lights over the fen. He also swears at the cat.'],
+  ['New face at the guild every month. Old face in the ground every other.', 'Sorry. Long week.'],
+  ['They say if you donate enough to the village, the roofs stop leaking.', 'They say a lot of things. That one seems to be true.'],
+  ['Careful out there. Come back and buy something.'],
+];
+const MERCHANT_LINES = [
+  ['Fresh from the caravan. Mostly fresh. Fresh enough.'],
+  ['I do not haggle before noon. After noon I am a different man.'],
+  ['Buy two and I will pretend that is a discount.'],
+];
+const GUARD_LINES = [
+  ['Road is open. Keep your hood down past the treeline.'],
+  ['Gate shuts at dark. Bang on it and I will let you in, grumbling.'],
+  ['Guild business? Go on through. Try to come back.'],
+  ['Fourth adventurer today. Two came back. Statistically you are fine.'],
+];
+const CAT_LINES = [
+  ['The cat looks at you.', 'The cat continues to look at you.'],
+  ['The cat permits one (1) scratch behind the ear.'],
+  ['The cat is asleep in the exact centre of the road.'],
 ];
 
+function linesFor(kind: NpcKind, r: RNG): string[] {
+  switch (kind) {
+    case 'kid': return r.pick(KID_LINES);
+    case 'elder': return r.pick(ELDER_LINES);
+    case 'merchant': return r.pick(MERCHANT_LINES);
+    case 'guard': return r.pick(GUARD_LINES);
+    case 'cat': return r.pick(CAT_LINES);
+    default: return r.pick(FOLK_LINES);
+  }
+}
+
+function nameFor(kind: NpcKind, r: RNG): string {
+  switch (kind) {
+    case 'kid': return r.pick(KID_NAMES);
+    case 'elder': return r.pick(ELDER_NAMES);
+    case 'guard': return r.pick(GUARD_NAMES);
+    case 'cat': return r.pick(['Biscuit', 'Mackerel', 'Duchess', 'Sir Lump']);
+    default: return r.pick(FOLK_NAMES);
+  }
+}
+
+// -------------------------------------------------------------------- build
+
 export function buildTown(st: GameState): Town {
-  const w = 30, h = 30;
-  const tiles = new Uint8Array(w * h);
-  for (let i = 0; i < tiles.length; i++) tiles[i] = Math.random() < 0.18 ? 1 : 0;
+  const W = 40, H = 40;
+  const tiles = new Uint8Array(W * H);
+  for (let i = 0; i < tiles.length; i++) tiles[i] = Math.random() < 0.16 ? 1 : 0;
 
-  const cx = (w * TS) / 2, cy = (h * TS) / 2;
-  const spots: Record<BuildingId, [number, number]> = {
-    guild: [cx - 300, cy - 250],
-    shop: [cx + 210, cy - 230],
-    smith: [cx + 250, cy + 120],
-    home: [cx - 330, cy + 130],
-    gate: [cx - 30, cy + 400],
+  const cx = (W * TS) / 2;
+  const cy = (H * TS) / 2;
+  const rich = st.village.preset === 'thriving';
+  // Faces and names stay put for a whole era, even though the map is rebuilt
+  // every time you walk back through the gate.
+  const r = new RNG(st.village.era * 7919 + 104729);
+
+  const buildings: Building[] = [];
+  const props: Prop[] = [];
+  const npcs: TownNPC[] = [];
+  const roads: Town['roads'] = [];
+
+  const B = (
+    id: BuildingId, key: string, name: string, x: number, y: number,
+    w: number, d: number, color: string, roof: string,
+    prompt: string | null, storeys = 1,
+  ) => {
+    buildings.push({ id, key, name, x, y, w, d, color, roof, prompt, warm: true, storeys });
   };
-  const buildings: Building[] = LAYOUT.map((b) => ({ ...b, x: spots[b.id][0], y: spots[b.id][1] }));
 
-  const decor: Town['decor'] = [];
-  for (let i = 0; i < 46; i++) {
-    decor.push({
-      x: Math.random() * w * TS, y: Math.random() * h * TS,
-      kind: Math.random() < 0.6 ? 0 : Math.random() < 0.5 ? 1 : 2,
+  // ------------------------------------------------------ the shop street
+  // A connected row of townhouses, north of the square. This is "the street".
+  const rowY = cy - 380;
+  const rowX = cx - 330;
+  B('bakery', 'bakery', 'Ostrun Bakery', rowX, rowY, 128, 108, '#b6a184', '#9d5f4a', null, 2);
+  B('shop', 'shop', 'General Store', rowX + 136, rowY, 150, 112, '#a89577', '#4f6b7a', 'buy & sell', 2);
+  B('apothecary', 'apothecary', 'Apothecary', rowX + 294, rowY, 120, 106, '#9fa887', '#5c6b4a', null, 2);
+  B('smith', 'smith', 'Smithy', rowX + 422, rowY + 6, 140, 112, '#8c7f74', '#584a44', 'enhance gear', 1);
+  B('tailor', 'tailor', 'Thimble & Thread', rowX + 570, rowY, 118, 104, '#b09a8e', '#7a5b7a', null, 2);
+
+  // ------------------------------------------------------------- the guild
+  B('guild', 'guild', 'Adventurers Guild', cx - 620, cy - 150, 200, 160, '#9d8156', '#8c4a3f', 'quest board', 2);
+  // training yard beside it
+  const yardX = cx - 690, yardY = cy + 120;
+  const yardW = 300, yardH = 210;
+  for (let i = 0; i * 40 < yardW; i++) {
+    props.push({ kind: 'fence', x: yardX + i * 40, y: yardY, x2: yardX + (i + 1) * 40, y2: yardY, variant: 0 });
+    props.push({ kind: 'fence', x: yardX + i * 40, y: yardY + yardH, x2: yardX + (i + 1) * 40, y2: yardY + yardH, variant: 0 });
+  }
+  for (let i = 0; i * 42 < yardH; i++) {
+    props.push({ kind: 'fence', x: yardX, y: yardY + i * 42, x2: yardX, y2: yardY + (i + 1) * 42, variant: 1 });
+    props.push({ kind: 'fence', x: yardX + yardW, y: yardY + i * 42, x2: yardX + yardW, y2: yardY + (i + 1) * 42, variant: 1 });
+  }
+  props.push({ kind: 'dummy', x: yardX + 70, y: yardY + 76, variant: 0 });
+  props.push({ kind: 'dummy', x: yardX + 158, y: yardY + 128, variant: 1 });
+  props.push({ kind: 'dummy', x: yardX + 44, y: yardY + 166, variant: 2 });
+  props.push({ kind: 'rack', x: yardX + 232, y: yardY + 54, variant: 0 });
+  props.push({ kind: 'haybale', x: yardX + 236, y: yardY + 164, variant: 0 });
+  props.push({ kind: 'signpost', x: yardX + 150, y: yardY - 8, variant: 0 });
+  // guild colours hang on the hall itself, not behind it
+  props.push({ kind: 'banner', x: cx - 606, y: cy - 46, variant: 0, color: '#8c4a3f' });
+  props.push({ kind: 'banner', x: cx - 452, y: cy - 46, variant: 0, color: '#8c4a3f' });
+
+  // --------------------------------------------------------------- the inn
+  B('inn', 'inn', 'The Gilded Sow', cx + 380, cy - 80, 210, 170, '#a98a63', '#7a4a3f', 'rest & rumours', 2);
+  props.push({ kind: 'bench', x: cx + 402, y: cy + 108, variant: 0 });
+  props.push({ kind: 'bench', x: cx + 520, y: cy + 108, variant: 0 });
+  props.push({ kind: 'lantern', x: cx + 372, y: cy + 96, variant: 0 });
+  props.push({ kind: 'lantern', x: cx + 596, y: cy + 96, variant: 0 });
+  props.push({ kind: 'barrel', x: cx + 604, y: cy + 40, variant: 0 });
+  props.push({ kind: 'barrel', x: cx + 618, y: cy + 66, variant: 1 });
+  props.push({ kind: 'crate', x: cx + 356, y: cy + 40, variant: 0 });
+
+  // --------------------------------------------------------- your homestead
+  B('home', 'home', 'Your Homestead', cx - 560, cy + 340, 168, 138, '#9a8560', '#6a7d4a', 'homestead & chest', 1);
+  for (let i = 0; i < 4; i++) {
+    props.push({ kind: 'crops', x: cx - 590 + i * 44, y: cy + 520, variant: i % 3 });
+  }
+  props.push({ kind: 'pot', x: cx - 566, y: cy + 484, variant: 0 });
+  props.push({ kind: 'laundry', x: cx - 400, y: cy + 400, x2: cx - 300, y2: cy + 430, variant: 0 });
+
+  // ------------------------------------------------------ plain houses
+  B('house', 'h1', '', cx + 150, cy + 250, 118, 100, '#ad9a80', '#6a5b7a', null, 1);
+  B('house', 'h2', '', cx + 300, cy + 300, 108, 96, '#a3917a', '#5f7a6a', null, 2);
+  B('house', 'h3', '', cx - 180, cy - 640, 112, 98, '#b0a086', '#7a6a4a', null, 1);
+  B('house', 'h4', '', cx + 60, cy - 640, 124, 104, '#a89578', '#6a4a5a', null, 2);
+  if (rich) {
+    B('house', 'h5', '', cx + 620, cy + 320, 116, 100, '#b3a186', '#5a6b7a', null, 2);
+    B('house', 'h6', '', cx - 290, cy + 470, 110, 96, '#ab9880', '#7a5b4a', null, 1);
+  }
+
+  // ------------------------------------------------------------- the gate
+  const gateY = cy + 690;
+  const gateX = cx;
+  B('gate', 'gate', 'City Gate', gateX - 46, gateY - 40, 92, 96, '#8e8375', '#4a443c', 'set out', 1);
+
+  // wall running east and west of the gate
+  for (let i = 1; i <= 9; i++) {
+    props.push({ kind: 'fence', x: gateX + 46 + (i - 1) * 74, y: gateY + 28, x2: gateX + 46 + i * 74, y2: gateY + 28, variant: 2 });
+    props.push({ kind: 'fence', x: gateX - 46 - (i - 1) * 74, y: gateY + 28, x2: gateX - 46 - i * 74, y2: gateY + 28, variant: 2 });
+  }
+  props.push({ kind: 'banner', x: gateX - 62, y: gateY - 50, variant: 1, color: '#4a5f8a' });
+  props.push({ kind: 'banner', x: gateX + 50, y: gateY - 50, variant: 1, color: '#4a5f8a' });
+  props.push({ kind: 'lantern', x: gateX - 86, y: gateY + 12, variant: 1 });
+  props.push({ kind: 'lantern', x: gateX + 86, y: gateY + 12, variant: 1 });
+
+  // ------------------------------------------------------------ the square
+  props.push({ kind: 'well', x: cx, y: cy, variant: 0 });
+  const stallCount = rich ? 5 : 2;
+  const stallHues = ['#b8524e', '#4f7fa8', '#6a9a52', '#a8894f', '#8a5fa8'];
+  for (let i = 0; i < stallCount; i++) {
+    // spread round the ring, skipping the mouth of the main road
+    const a = -Math.PI * 0.86 + (i / Math.max(1, stallCount - 1)) * Math.PI * 1.72;
+    props.push({
+      kind: 'stall', variant: i,
+      x: cx + Math.cos(a) * 215, y: cy + Math.sin(a) * 158 + 26,
+      color: stallHues[i % stallHues.length],
+    });
+  }
+  for (let i = 0; i < (rich ? 8 : 3); i++) {
+    const a = r.float(0, Math.PI * 2);
+    props.push({
+      kind: 'flowerbed', variant: r.int(0, 3),
+      x: cx + Math.cos(a) * r.float(120, 300), y: cy + Math.sin(a) * r.float(90, 220),
+    });
+  }
+  props.push({ kind: 'bench', x: cx - 130, y: cy + 90, variant: 0 });
+  props.push({ kind: 'bench', x: cx + 96, y: cy - 84, variant: 1 });
+  props.push({ kind: 'signpost', x: cx + 30, y: cy + 190, variant: 0 });
+
+  // ------------------------------------------------------- roads and lamps
+  const road = (x1: number, y1: number, x2: number, y2: number, w = 62) =>
+    roads.push({ x1, y1, x2, y2, w });
+  road(gateX, gateY + 20, cx, cy, 74);            // gate to square
+  road(cx, cy, cx, rowY + 150, 68);               // square to the shop street
+  road(rowX - 20, rowY + 150, rowX + 700, rowY + 150, 56); // the street itself
+  road(cx, cy, cx + 470, cy + 40, 56);            // to the inn
+  road(cx, cy, cx - 470, cy - 40, 56);            // to the guild
+  road(cx - 300, cy + 40, cx - 500, cy + 350, 48); // to home
+
+  for (let i = 0; i < 7; i++) {
+    props.push({ kind: 'lantern', x: cx - 40, y: cy + 90 + i * 88, variant: 0 });
+  }
+  for (let i = 0; i < 5; i++) {
+    props.push({ kind: 'lantern', x: rowX - 10 + i * 176, y: rowY + 186, variant: 0 });
+  }
+
+  // ------------------------------------------------------ trees and greenery
+  const treeSpots: [number, number][] = [
+    [cx - 760, cy - 420], [cx - 700, cy + 640], [cx + 700, cy - 420], [cx + 760, cy + 560],
+    [cx - 90, cy + 360], [cx + 210, cy - 200], [cx - 250, cy + 200], [cx + 640, cy - 300],
+    [cx - 420, cy - 560], [cx + 380, cy + 560], [cx + 120, cy + 480], [cx - 640, cy + 120],
+  ];
+  for (const [x, y] of treeSpots) props.push({ kind: 'tree', x, y, variant: r.int(0, 2) });
+  for (let i = 0; i < (rich ? 26 : 14); i++) {
+    props.push({
+      kind: 'bush', variant: r.int(0, 2),
+      x: r.float(TS * 3, W * TS - TS * 3), y: r.float(TS * 3, H * TS - TS * 3),
+    });
+  }
+  for (let i = 0; i < 6; i++) {
+    props.push({ kind: 'sapling', variant: r.int(0, 1), x: cx + r.float(-500, 500), y: cy + r.float(-500, 500) });
+  }
+
+  // ----------------------------------------------------------------- people
+  const addNpc = (kind: NpcKind, x: number, y: number, radius: number, fixed = false) => {
+    npcs.push({
+      id: kind + npcs.length,
+      kind,
+      name: nameFor(kind, r),
+      x, y, hx: x, hy: y, homeR: radius,
+      t: r.float(0, 4),
+      facing: Math.PI / 2,
+      walkT: r.float(0, 6),
+      speed: kind === 'kid' ? 74 : kind === 'elder' ? 20 : kind === 'cat' ? 30 : 34,
+      appearance: rollAppearance(r),
+      lines: linesFor(kind, r),
+      fixed,
+    });
+  };
+
+  addNpc('guard', gateX - 92, gateY + 62, 0, true);
+  addNpc('guard', gateX + 92, gateY + 62, 0, true);
+  addNpc('elder', cx - 122, cy + 96, 26);
+  for (let i = 0; i < stallCount; i++) {
+    const p = props.filter((x) => x.kind === 'stall')[i];
+    if (p) addNpc('merchant', p.x, p.y + 34, 22);
+  }
+  const folkCount = rich ? 7 : 3;
+  for (let i = 0; i < folkCount; i++) {
+    addNpc('folk', cx + r.float(-380, 380), cy + r.float(-300, 300), 130);
+  }
+  const kidCount = rich ? 4 : 2;
+  for (let i = 0; i < kidCount; i++) {
+    addNpc('kid', cx + r.float(-220, 220), cy + r.float(-160, 200), 170);
+  }
+  addNpc('cat', cx + r.float(-200, 200), cy + r.float(-160, 160), 90);
+  if (rich) addNpc('elder', cx + 104, cy - 78, 24);
+
+  // ------------------------------------------------------------- colliders
+  const colliders: Rect[] = [];
+  for (const b of buildings) {
+    if (b.id === 'gate') {
+      // the arch is walkable; the two piers are not
+      colliders.push({ x: b.x - 34, y: b.y + b.d * 0.45, w: 36, h: b.d * 0.55 });
+      colliders.push({ x: b.x + b.w - 2, y: b.y + b.d * 0.45, w: 36, h: b.d * 0.55 });
+      continue;
+    }
+    colliders.push({ x: b.x + 4, y: b.y + b.d * 0.35, w: b.w - 8, h: b.d * 0.65 });
+  }
+  for (const p of props) {
+    if (p.kind === 'fence' && p.variant === 2 && p.x2 !== undefined) {
+      const x0 = Math.min(p.x, p.x2), x1 = Math.max(p.x, p.x2);
+      colliders.push({ x: x0, y: p.y - 10, w: x1 - x0, h: 30 });
+    }
+    if (p.kind === 'well') colliders.push({ x: p.x - 26, y: p.y - 14, w: 52, h: 28 });
+    if (p.kind === 'tree') colliders.push({ x: p.x - 10, y: p.y - 8, w: 20, h: 16 });
+  }
+
+  const motes: Mote[] = [];
+  for (let i = 0; i < 60; i++) {
+    motes.push({
+      x: r.float(0, W * TS), y: r.float(0, H * TS),
+      vx: r.float(-9, 9), vy: r.float(-14, -4),
+      t: r.float(0, 6), life: r.float(4, 9), s: r.float(1.2, 2.6),
     });
   }
 
-  const npcCount = st.village.preset === 'thriving' ? 7 : 3;
-  const hues = ['#8a5c4a', '#4f6b7a', '#6a7d4a', '#7a6a92', '#93704a', '#5f7f6f'];
-  const npcs: Town['npcs'] = [];
-  for (let i = 0; i < npcCount; i++) {
-    const x = cx + (Math.random() - 0.5) * 460;
-    const y = cy + (Math.random() - 0.5) * 460;
-    npcs.push({ x, y, t: Math.random() * 6, hue: hues[i % hues.length], home: [x, y] });
-  }
-
-  return { w, h, tiles, buildings, px: cx, py: cy + 150, facing: -Math.PI / 2, walkT: 0, decor, npcs };
+  return {
+    w: W, h: H, tiles, buildings, props, npcs, colliders, motes, roads,
+    px: gateX, py: gateY + 96,
+    facing: -Math.PI / 2, walkT: 0, time: 0,
+    gateX, gateY: gateY + 40,
+  };
 }
 
-export function nearestBuilding(t: Town): Building | null {
-  let best: Building | null = null;
+// ------------------------------------------------------------- interaction
+
+export function nearestInteract(t: Town): Interact {
+  let best: Interact = null;
   let bd = 999999;
   for (const b of t.buildings) {
-    const d = Math.hypot(t.px - (b.x + b.w / 2), t.py - (b.y + b.d + 14));
-    if (d < 78 && d < bd) { bd = d; best = b; }
+    if (!b.prompt) continue;
+    const d = Math.hypot(t.px - (b.x + b.w / 2), t.py - (b.y + b.d + 16));
+    if (d < 86 && d < bd) { bd = d; best = { kind: 'building', b }; }
+  }
+  for (const n of t.npcs) {
+    const d = Math.hypot(t.px - n.x, t.py - n.y);
+    if (d < 62 && d < bd) { bd = d; best = { kind: 'npc', n }; }
   }
   return best;
 }
 
+function blocked(t: Town, x: number, y: number): boolean {
+  for (const c of t.colliders) {
+    if (x > c.x - 8 && x < c.x + c.w + 8 && y > c.y - 4 && y < c.y + c.h + 4) return true;
+  }
+  return false;
+}
+
 export function tickTown(t: Town, dt: number, mx: number, my: number, speed: number): void {
+  t.time += dt;
   const len = Math.hypot(mx, my);
   if (len > 0.01) {
     const nx = mx / len, ny = my / len;
-    t.px = Math.max(30, Math.min(t.w * TS - 30, t.px + nx * speed * dt));
-    t.py = Math.max(30, Math.min(t.h * TS - 30, t.py + ny * speed * dt));
+    // resolve one axis at a time so you slide along walls instead of sticking
+    const tryX = t.px + nx * speed * dt;
+    if (!blocked(t, tryX, t.py)) t.px = Math.max(40, Math.min(t.w * TS - 40, tryX));
+    const tryY = t.py + ny * speed * dt;
+    if (!blocked(t, t.px, tryY)) t.py = Math.max(40, Math.min(t.h * TS - 40, tryY));
     t.facing = Math.atan2(ny, nx);
     t.walkT += dt;
   }
+
   for (const n of t.npcs) {
+    if (n.fixed) {
+      n.facing = Math.PI / 2;
+      continue;
+    }
     n.t -= dt;
     if (n.t <= 0) {
-      n.t = 2 + Math.random() * 5;
-      n.home[0] += (Math.random() - 0.5) * 120;
-      n.home[1] += (Math.random() - 0.5) * 120;
+      n.t = n.kind === 'kid' ? 0.8 + Math.random() * 1.6 : 2 + Math.random() * 5;
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * n.homeR;
+      n.hx = n.x + Math.cos(a) * r;
+      n.hy = n.y + Math.sin(a) * r;
     }
-    const dx = n.home[0] - n.x, dy = n.home[1] - n.y;
+    const dx = n.hx - n.x, dy = n.hy - n.y;
     const d = Math.hypot(dx, dy);
-    if (d > 4) { n.x += (dx / d) * 34 * dt; n.y += (dy / d) * 34 * dt; }
+    if (d > 5) {
+      const stepX = n.x + (dx / d) * n.speed * dt;
+      const stepY = n.y + (dy / d) * n.speed * dt;
+      if (!blocked(t, stepX, n.y)) n.x = stepX;
+      if (!blocked(t, n.x, stepY)) n.y = stepY;
+      n.facing = Math.atan2(dy, dx);
+      n.walkT += dt;
+    }
+  }
+
+  for (const m of t.motes) {
+    m.t += dt;
+    m.x += m.vx * dt;
+    m.y += m.vy * dt;
+    if (m.t > m.life) {
+      m.t = 0;
+      m.x = Math.random() * t.w * TS;
+      m.y = Math.random() * t.h * TS;
+    }
   }
 }
 
-// -------------------------------------------------------------------- render
+// ------------------------------------------------------------------ drawing
 
-function shadeHex(hex: string, amt: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.max(0, Math.min(255, ((n >> 16) & 255) + amt));
-  const g = Math.max(0, Math.min(255, ((n >> 8) & 255) + amt));
-  const b = Math.max(0, Math.min(255, (n & 255) + amt));
-  return 'rgb(' + r + ',' + g + ',' + b + ')';
+function lanternGlow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, a: number): void {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, 'rgba(255, 214, 140, ' + a + ')');
+  g.addColorStop(1, 'rgba(255, 200, 120, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
 }
 
-/** A house seen from a high angle: roof plane on top, a slice of front wall below it. */
-function house(ctx: CanvasRenderingContext2D, b: Building): void {
-  const roofH = b.d * 0.66;
+function drawProp(ctx: CanvasRenderingContext2D, p: Prop, t: number, rich: boolean): void {
+  const x = p.x, y = p.y;
+  switch (p.kind) {
+    case 'tree': {
+      shadow(ctx, x, y, 22, 0.26);
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 5, y - 34, 10, 34);
+      const greens = rich ? ['#4d7c3c', '#568a42', '#3f6b34'] : ['#5f6b3a', '#6a7340', '#4f5a30'];
+      ctx.fillStyle = greens[p.variant % 3];
+      ctx.beginPath();
+      ctx.arc(x, y - 52, 26, 0, Math.PI * 2);
+      ctx.arc(x - 18, y - 40, 18, 0, Math.PI * 2);
+      ctx.arc(x + 18, y - 40, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.beginPath(); ctx.arc(x - 9, y - 62, 12, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'sapling':
+      ctx.fillStyle = '#6b4a2a'; ctx.fillRect(x - 2, y - 16, 4, 16);
+      ctx.fillStyle = rich ? '#5f9a48' : '#6a7340';
+      ctx.beginPath(); ctx.arc(x, y - 22, 10, 0, Math.PI * 2); ctx.fill();
+      break;
+    case 'bush':
+      ctx.fillStyle = rich ? '#4f8040' : '#5c6a3c';
+      ctx.beginPath();
+      ctx.arc(x, y - 7, 11, 0, Math.PI * 2);
+      ctx.arc(x - 8, y - 3, 8, 0, Math.PI * 2);
+      ctx.arc(x + 8, y - 3, 8, 0, Math.PI * 2);
+      ctx.fill();
+      if (rich && p.variant === 1) {
+        ctx.fillStyle = '#e8879c';
+        ctx.beginPath(); ctx.arc(x - 4, y - 12, 2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 6, y - 9, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    case 'flowerbed': {
+      ctx.fillStyle = '#5a4632';
+      ctx.beginPath(); ctx.ellipse(x, y, 20, 11, 0, 0, Math.PI * 2); ctx.fill();
+      const cols = ['#e0607a', '#e8c15a', '#8f7fe0', '#e88f5a'];
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * Math.PI * 2 + p.variant;
+        ctx.fillStyle = cols[(i + p.variant) % cols.length];
+        ctx.beginPath();
+        ctx.arc(x + Math.cos(a) * 12, y + Math.sin(a) * 6 - 3, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    }
+    case 'crops':
+      ctx.fillStyle = '#5a4632';
+      ctx.fillRect(x - 18, y - 6, 36, 14);
+      ctx.fillStyle = ['#7fae52', '#9ab85f', '#c8a24b'][p.variant % 3];
+      for (let i = 0; i < 5; i++) {
+        const h = 12 + Math.sin(t * 1.4 + i + x * 0.01) * 2;
+        ctx.fillRect(x - 15 + i * 7, y - h, 3, h);
+      }
+      break;
+    case 'lantern': {
+      const post = p.variant === 1 ? 40 : 32;
+      shadow(ctx, x, y, 7, 0.22);
+      ctx.fillStyle = '#4a4038';
+      ctx.fillRect(x - 2.5, y - post, 5, post);
+      ctx.fillStyle = '#33302b';
+      ctx.fillRect(x - 8, y - post - 12, 16, 13);
+      const flicker = 0.72 + Math.sin(t * 3 + x) * 0.07;
+      ctx.fillStyle = 'rgba(255,214,140,' + flicker + ')';
+      ctx.fillRect(x - 5.5, y - post - 10, 11, 9);
+      break;
+    }
+    case 'well':
+      shadow(ctx, x, y, 28, 0.28);
+      ctx.fillStyle = '#8a8378';
+      ctx.beginPath(); ctx.ellipse(x, y, 27, 17, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#4a6b7a';
+      ctx.beginPath(); ctx.ellipse(x, y - 2, 19, 11, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.14 + Math.sin(t * 1.7) * 0.05) + ')';
+      ctx.beginPath(); ctx.ellipse(x - 4, y - 4, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 24, y - 44, 5, 44);
+      ctx.fillRect(x + 19, y - 44, 5, 44);
+      ctx.fillStyle = '#8c4a3f';
+      ctx.beginPath();
+      ctx.moveTo(x - 32, y - 44); ctx.lineTo(x, y - 62); ctx.lineTo(x + 32, y - 44);
+      ctx.closePath(); ctx.fill();
+      break;
+    case 'stall': {
+      shadow(ctx, x, y, 30, 0.24);
+      ctx.fillStyle = '#7a5a3a';
+      ctx.fillRect(x - 34, y - 22, 68, 22);
+      ctx.fillStyle = '#8f6a44';
+      ctx.fillRect(x - 34, y - 26, 68, 6);
+      // awning
+      const c = p.color ?? '#b8524e';
+      for (let i = 0; i < 6; i++) {
+        ctx.fillStyle = i % 2 ? c : '#efe3cf';
+        ctx.fillRect(x - 36 + i * 12, y - 62, 12, 18);
+      }
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 34, y - 62, 4, 40);
+      ctx.fillRect(x + 30, y - 62, 4, 40);
+      // goods
+      const goods = ['#d05a4a', '#e0b64f', '#7fae52', '#a86fd0'];
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = goods[(i + p.variant) % goods.length];
+        ctx.beginPath(); ctx.arc(x - 22 + i * 15, y - 28, 5, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    }
+    case 'bench':
+      shadow(ctx, x, y, 18, 0.2);
+      ctx.fillStyle = '#7a5a3a';
+      ctx.fillRect(x - 22, y - 12, 44, 7);
+      ctx.fillRect(x - 22, y - 24, 44, 5);
+      ctx.fillStyle = '#5f4630';
+      ctx.fillRect(x - 20, y - 5, 4, 6);
+      ctx.fillRect(x + 16, y - 5, 4, 6);
+      break;
+    case 'barrel':
+      shadow(ctx, x, y, 11, 0.22);
+      ctx.fillStyle = '#8a6440';
+      roundRect(ctx, x - 11, y - 24, 22, 24, 5); ctx.fill();
+      ctx.fillStyle = '#5f4630';
+      ctx.fillRect(x - 11, y - 18, 22, 3);
+      ctx.fillRect(x - 11, y - 9, 22, 3);
+      break;
+    case 'crate':
+      shadow(ctx, x, y, 12, 0.22);
+      ctx.fillStyle = '#9a7a4e';
+      ctx.fillRect(x - 12, y - 22, 24, 22);
+      ctx.strokeStyle = '#6b512f'; ctx.lineWidth = 2;
+      ctx.strokeRect(x - 12, y - 22, 24, 22);
+      ctx.beginPath(); ctx.moveTo(x - 12, y - 22); ctx.lineTo(x + 12, y); ctx.stroke();
+      break;
+    case 'haybale':
+      shadow(ctx, x, y, 16, 0.22);
+      ctx.fillStyle = '#c8a24b';
+      roundRect(ctx, x - 17, y - 24, 34, 24, 7); ctx.fill();
+      ctx.strokeStyle = '#9a7a30'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x - 6, y - 24); ctx.lineTo(x - 6, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 6, y - 24); ctx.lineTo(x + 6, y); ctx.stroke();
+      break;
+    case 'pot':
+      shadow(ctx, x, y, 9, 0.2);
+      ctx.fillStyle = '#a8603f';
+      ctx.beginPath();
+      ctx.moveTo(x - 9, y - 14); ctx.lineTo(x + 9, y - 14); ctx.lineTo(x + 6, y); ctx.lineTo(x - 6, y);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#5f9a48';
+      ctx.beginPath(); ctx.arc(x, y - 20, 8, 0, Math.PI * 2); ctx.fill();
+      break;
+    case 'dummy':
+      shadow(ctx, x, y, 13, 0.24);
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 3, y - 26, 6, 26);
+      ctx.fillStyle = '#c8a875';
+      roundRect(ctx, x - 13, y - 54, 26, 30, 8); ctx.fill();
+      ctx.fillStyle = '#8a6a44';
+      ctx.fillRect(x - 20, y - 46, 40, 6);
+      ctx.beginPath(); ctx.arc(x, y - 60, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#7a3a34'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y - 40, 7, 0, Math.PI * 2); ctx.stroke();
+      break;
+    case 'rack':
+      shadow(ctx, x, y, 16, 0.2);
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 22, y - 8, 44, 6);
+      ctx.fillRect(x - 22, y - 40, 44, 5);
+      ctx.fillRect(x - 22, y - 40, 4, 38);
+      ctx.fillRect(x + 18, y - 40, 4, 38);
+      ctx.strokeStyle = '#c9ccd6'; ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x - 14 + i * 14, y - 38);
+        ctx.lineTo(x - 14 + i * 14, y - 8);
+        ctx.stroke();
+      }
+      break;
+    case 'signpost':
+      shadow(ctx, x, y, 8, 0.2);
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 3, y - 42, 6, 42);
+      ctx.fillStyle = '#8a6a44';
+      ctx.fillRect(x - 26, y - 42, 26, 11);
+      ctx.fillRect(x + 2, y - 28, 26, 11);
+      break;
+    case 'cart':
+      shadow(ctx, x, y, 24, 0.22);
+      ctx.fillStyle = '#8a6440';
+      ctx.fillRect(x - 26, y - 26, 52, 18);
+      ctx.fillStyle = '#4a3a2a';
+      ctx.beginPath(); ctx.arc(x - 16, y - 6, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 16, y - 6, 9, 0, Math.PI * 2); ctx.fill();
+      break;
+    case 'banner': {
+      const c = p.color ?? '#8c4a3f';
+      ctx.fillStyle = c;
+      const sway = Math.sin(t * 1.3 + x * 0.02) * 3;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + 20, y + sway);
+      ctx.lineTo(x + 20 + sway * 0.3, y + 56);
+      ctx.lineTo(x + 10, y + 48);
+      ctx.lineTo(x, y + 56);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(c, 40);
+      ctx.fillRect(x + 6, y + 16, 8, 8);
+      break;
+    }
+    case 'fence': {
+      if (p.x2 === undefined || p.y2 === undefined) break;
+      if (p.variant === 2) {
+        // city wall
+        const x0 = Math.min(p.x, p.x2), x1 = Math.max(p.x, p.x2);
+        ctx.fillStyle = '#8e8375';
+        ctx.fillRect(x0, p.y - 46, x1 - x0, 46);
+        ctx.fillStyle = '#6f6558';
+        ctx.fillRect(x0, p.y - 12, x1 - x0, 12);
+        ctx.fillStyle = '#9d9284';
+        for (let bx = x0; bx < x1 - 8; bx += 26) ctx.fillRect(bx, p.y - 56, 16, 12);
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.lineWidth = 1;
+        for (let by = p.y - 40; by < p.y; by += 11) {
+          ctx.beginPath(); ctx.moveTo(x0, by); ctx.lineTo(x1, by); ctx.stroke();
+        }
+      } else {
+        ctx.strokeStyle = '#8a6a44';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 14); ctx.lineTo(p.x2, p.y2 - 14);
+        ctx.moveTo(p.x, p.y - 24); ctx.lineTo(p.x2, p.y2 - 24);
+        ctx.stroke();
+        ctx.fillStyle = '#6b4a2a';
+        ctx.fillRect(p.x - 2, p.y - 30, 4, 30);
+      }
+      break;
+    }
+    case 'laundry': {
+      if (p.x2 === undefined || p.y2 === undefined) break;
+      ctx.strokeStyle = 'rgba(60,50,40,0.7)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 52); ctx.lineTo(p.x2, p.y2 - 52);
+      ctx.stroke();
+      const cols = ['#e8e0d0', '#a8c4e0', '#e0b6c8', '#d8d2a8'];
+      for (let i = 1; i <= 4; i++) {
+        const f = i / 5;
+        const lx = p.x + (p.x2 - p.x) * f;
+        const ly = p.y + (p.y2 - p.y) * f - 52;
+        const sway = Math.sin(t * 1.6 + i) * 2.5;
+        ctx.fillStyle = cols[i % cols.length];
+        ctx.beginPath();
+        ctx.moveTo(lx - 9, ly);
+        ctx.lineTo(lx + 9, ly);
+        ctx.lineTo(lx + 7 + sway, ly + 22);
+        ctx.lineTo(lx - 7 + sway, ly + 22);
+        ctx.closePath();
+        ctx.fill();
+      }
+      break;
+    }
+  }
+}
+
+/** A townhouse seen from a high angle: roof plane on top, front wall below. */
+function house(ctx: CanvasRenderingContext2D, b: Building, t: number, warmth: number): void {
+  const roofH = b.d * 0.6;
   const wallH = b.d - roofH;
 
-  ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.22)';
-  roundRect(ctx, b.x + 7, b.y + 9, b.w, b.d, 5);
+  ctx.fillStyle = 'rgba(0,0,0,0.20)';
+  roundRect(ctx, b.x + 8, b.y + 10, b.w, b.d, 6);
   ctx.fill();
-  ctx.restore();
 
   // front wall
   ctx.fillStyle = b.color;
   ctx.fillRect(b.x + 5, b.y + roofH, b.w - 10, wallH);
-  ctx.fillStyle = shadeHex(b.color, -26);
-  ctx.fillRect(b.x + 5, b.y + b.d - 5, b.w - 10, 5);
-
-  // door
-  const dw = 22, dx = b.x + b.w / 2 - dw / 2;
-  ctx.fillStyle = '#33261d';
-  ctx.fillRect(dx, b.y + roofH + wallH * 0.18, dw, wallH * 0.82);
-  ctx.fillStyle = '#c8a24b';
-  ctx.fillRect(dx + dw - 6, b.y + roofH + wallH * 0.55, 3, 3);
-
-  // windows
-  ctx.fillStyle = '#e8cf8a';
-  const wy = b.y + roofH + wallH * 0.3;
-  ctx.fillRect(b.x + 16, wy, 13, 13);
-  ctx.fillRect(b.x + b.w - 29, wy, 13, 13);
-  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(b.x + 16, wy, 13, 13);
-  ctx.strokeRect(b.x + b.w - 29, wy, 13, 13);
-
-  // roof, overhanging a little on each side
-  ctx.fillStyle = b.roof;
-  roundRect(ctx, b.x - 4, b.y - 6, b.w + 8, roofH + 6, 4);
-  ctx.fill();
-  ctx.fillStyle = shadeHex(b.roof, -22);
-  ctx.fillRect(b.x - 4, b.y + roofH - 4, b.w + 8, 6);
-  // shingle rows
-  ctx.strokeStyle = 'rgba(0,0,0,0.14)';
-  ctx.lineWidth = 1;
+  // timber framing, the whole storybook-village thing
+  ctx.strokeStyle = 'rgba(70,52,38,0.55)';
+  ctx.lineWidth = 3;
   ctx.beginPath();
-  for (let y = b.y + 4; y < b.y + roofH - 4; y += 9) {
-    ctx.moveTo(b.x - 4, y); ctx.lineTo(b.x + b.w + 4, y);
+  ctx.moveTo(b.x + 5, b.y + roofH + 3); ctx.lineTo(b.x + b.w - 5, b.y + roofH + 3);
+  const bays = Math.max(2, Math.round(b.w / 46));
+  for (let i = 1; i < bays; i++) {
+    const bx = b.x + 5 + ((b.w - 10) / bays) * i;
+    ctx.moveTo(bx, b.y + roofH + 3); ctx.lineTo(bx, b.y + b.d - 2);
   }
   ctx.stroke();
-  // ridge highlight
-  ctx.fillStyle = shadeHex(b.roof, 26);
-  ctx.fillRect(b.x - 4, b.y - 6, b.w + 8, 5);
+  ctx.fillStyle = shade(b.color, -34);
+  ctx.fillRect(b.x + 5, b.y + b.d - 6, b.w - 10, 6);
+
+  // door
+  const dw = 24, dx = b.x + b.w / 2 - dw / 2;
+  const dTop = b.y + roofH + wallH * 0.16;
+  ctx.fillStyle = '#3a2b21';
+  roundRect(ctx, dx, dTop, dw, wallH * 0.84, 8);
+  ctx.fill();
+  ctx.fillStyle = '#c8a24b';
+  ctx.beginPath(); ctx.arc(dx + dw - 6, dTop + wallH * 0.45, 2, 0, Math.PI * 2); ctx.fill();
+
+  // windows, warm when it is getting dark
+  const winY = b.y + roofH + wallH * 0.26;
+  const lit = 'rgba(255,' + Math.round(214 - warmth * 20) + ',' + Math.round(150 - warmth * 40) + ',' + (0.55 + warmth * 0.45) + ')';
+  for (const wx of [b.x + 16, b.x + b.w - 30]) {
+    ctx.fillStyle = b.warm ? lit : '#4a4a52';
+    roundRect(ctx, wx, winY, 14, 14, 3); ctx.fill();
+    ctx.strokeStyle = 'rgba(60,44,32,0.7)'; ctx.lineWidth = 1.6;
+    roundRect(ctx, wx, winY, 14, 14, 3); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(wx + 7, winY); ctx.lineTo(wx + 7, winY + 14);
+    ctx.moveTo(wx, winY + 7); ctx.lineTo(wx + 14, winY + 7);
+    ctx.stroke();
+  }
+  // upper storey windows sit on the roof plane, cheating a little
+  if (b.storeys > 1) {
+    for (const wx of [b.x + b.w * 0.28 - 7, b.x + b.w * 0.72 - 7]) {
+      ctx.fillStyle = b.warm ? lit : '#4a4a52';
+      roundRect(ctx, wx, b.y + roofH - 26, 14, 14, 3); ctx.fill();
+      ctx.strokeStyle = 'rgba(50,36,26,0.8)'; ctx.lineWidth = 1.6;
+      roundRect(ctx, wx, b.y + roofH - 26, 14, 14, 3); ctx.stroke();
+    }
+  }
+
+  // roof
+  ctx.fillStyle = b.roof;
+  roundRect(ctx, b.x - 6, b.y - 8, b.w + 12, roofH + 6, 5);
+  ctx.fill();
+  ctx.fillStyle = shade(b.roof, -26);
+  ctx.fillRect(b.x - 6, b.y + roofH - 6, b.w + 12, 8);
+  ctx.strokeStyle = 'rgba(0,0,0,0.13)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let y = b.y - 2; y < b.y + roofH - 8; y += 8) {
+    ctx.moveTo(b.x - 6, y); ctx.lineTo(b.x + b.w + 6, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = shade(b.roof, 30);
+  ctx.fillRect(b.x - 6, b.y - 8, b.w + 12, 5);
+
+  // chimney and smoke
+  const chX = b.x + b.w * 0.76;
+  ctx.fillStyle = shade(b.color, -30);
+  ctx.fillRect(chX, b.y - 24, 15, 22);
+  ctx.fillStyle = shade(b.color, -50);
+  ctx.fillRect(chX - 2, b.y - 27, 19, 5);
+  for (let i = 0; i < 3; i++) {
+    const pt = (t * 0.42 + i * 0.33) % 1;
+    ctx.fillStyle = 'rgba(226,220,210,' + (0.30 * (1 - pt)) + ')';
+    ctx.beginPath();
+    ctx.arc(chX + 7 + Math.sin(pt * 6 + i) * 9, b.y - 30 - pt * 58, 5 + pt * 12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function gateHouse(ctx: CanvasRenderingContext2D, b: Building, t: number): void {
+  const pierW = 46, pierH = 130;
+  const y0 = b.y - 34;
+  for (const px of [b.x - 34, b.x + b.w - 12]) {
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    roundRect(ctx, px + 7, y0 + pierH - 6, pierW, 28, 4); ctx.fill();
+    ctx.fillStyle = '#9d9284';
+    ctx.fillRect(px, y0, pierW, pierH);
+    ctx.fillStyle = '#8e8375';
+    ctx.fillRect(px, y0 + pierH - 22, pierW, 22);
+    ctx.strokeStyle = 'rgba(0,0,0,0.13)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let y = y0 + 8; y < y0 + pierH; y += 13) { ctx.moveTo(px, y); ctx.lineTo(px + pierW, y); }
+    ctx.stroke();
+    ctx.fillStyle = '#b0a598';
+    for (let i = 0; i < 3; i++) ctx.fillRect(px + 3 + i * 16, y0 - 12, 11, 13);
+  }
+  // arch
+  ctx.fillStyle = '#2b2622';
+  ctx.beginPath();
+  ctx.moveTo(b.x + 12, y0 + pierH);
+  ctx.lineTo(b.x + 12, y0 + 52);
+  ctx.quadraticCurveTo(b.x + b.w / 2, y0 + 2, b.x + b.w - 12, y0 + 52);
+  ctx.lineTo(b.x + b.w - 12, y0 + pierH);
+  ctx.closePath();
+  ctx.fill();
+  // portcullis, raised
+  ctx.strokeStyle = '#5f5750'; ctx.lineWidth = 3;
+  for (let i = 0; i < 5; i++) {
+    const gx = b.x + 18 + i * 14;
+    ctx.beginPath(); ctx.moveTo(gx, y0 + 12); ctx.lineTo(gx, y0 + 38); ctx.stroke();
+  }
+  // lintel and banner
+  ctx.fillStyle = '#8e8375';
+  ctx.fillRect(b.x - 40, y0 - 22, b.w + 80, 22);
+  ctx.fillStyle = '#4a5f8a';
+  const sway = Math.sin(t * 1.1) * 2;
+  ctx.beginPath();
+  ctx.moveTo(b.x + b.w / 2 - 16, y0 - 2);
+  ctx.lineTo(b.x + b.w / 2 + 16, y0 - 2);
+  ctx.lineTo(b.x + b.w / 2 + 14 + sway, y0 + 40);
+  ctx.lineTo(b.x + b.w / 2, y0 + 32);
+  ctx.lineTo(b.x + b.w / 2 - 14 + sway, y0 + 40);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawTownNpc(ctx: CanvasRenderingContext2D, n: TownNPC, near: boolean): void {
+  const a = n.appearance;
+  if (n.kind === 'cat') {
+    shadow(ctx, n.x, n.y, 8, 0.2);
+    const bob = Math.sin(n.walkT * 8) * 1.2;
+    ctx.fillStyle = '#4a4038';
+    roundRect(ctx, n.x - 10, n.y - 12 + bob, 20, 10, 5); ctx.fill();
+    ctx.beginPath(); ctx.arc(n.x + 8, n.y - 15 + bob, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(n.x + 5, n.y - 19 + bob); ctx.lineTo(n.x + 7, n.y - 24 + bob); ctx.lineTo(n.x + 9, n.y - 19 + bob);
+    ctx.moveTo(n.x + 10, n.y - 19 + bob); ctx.lineTo(n.x + 12, n.y - 24 + bob); ctx.lineTo(n.x + 13, n.y - 19 + bob);
+    ctx.fill();
+    ctx.strokeStyle = '#4a4038'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(n.x - 10, n.y - 10 + bob);
+    ctx.quadraticCurveTo(n.x - 20, n.y - 18 + bob, n.x - 16, n.y - 26 + bob);
+    ctx.stroke();
+    ctx.fillStyle = '#e8d05a';
+    ctx.fillRect(n.x + 9, n.y - 16 + bob, 1.6, 1.6);
+    if (near) prompt(ctx, n.x, n.y - 36, n.name);
+    return;
+  }
+
+  const scale = n.kind === 'kid' ? 0.72 : n.kind === 'elder' ? 0.9 : 1;
+  const H = 40 * a.height * scale;
+  const bob = Math.sin(n.walkT * 11) * 1.8;
+  shadow(ctx, n.x, n.y, 10 * scale, 0.24);
+  ctx.save();
+  ctx.translate(n.x, n.y - bob);
+
+  ctx.fillStyle = shade(a.cloth, -46);
+  ctx.fillRect(-5 * scale, -13 * scale, 4 * scale, 13 * scale);
+  ctx.fillRect(1 * scale, -13 * scale, 4 * scale, 13 * scale);
+
+  ctx.fillStyle = n.kind === 'guard' ? '#5f6b82' : a.cloth;
+  roundRect(ctx, -7.5 * scale, -H + 10, 15 * scale, H - 22, 4);
+  ctx.fill();
+  ctx.fillStyle = n.kind === 'guard' ? '#c9ccd6' : a.accent;
+  ctx.fillRect(-7.5 * scale, -H + 19, 15 * scale, 3);
+
+  ctx.fillStyle = a.skin;
+  ctx.beginPath(); ctx.arc(0, -H + 3, 8.4 * scale, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = n.kind === 'elder' ? '#ded8cc' : a.hair;
+  ctx.beginPath(); ctx.arc(0, -H + 1.5, 8.7 * scale, Math.PI, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#20242c';
+  ctx.fillRect(-3.4 * scale, -H + 3, 1.8, 2.2);
+  ctx.fillRect(1.8 * scale, -H + 3, 1.8, 2.2);
+
+  if (n.kind === 'guard') {
+    ctx.fillStyle = '#aeb6c4';
+    ctx.beginPath(); ctx.arc(0, -H + 2, 9.4 * scale, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.fillRect(-9.4 * scale, -H + 2, 18.8 * scale, 3);
+    // spear
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(11 * scale, -H - 12, 3, H + 12);
+    ctx.fillStyle = '#c9ccd6';
+    ctx.beginPath();
+    ctx.moveTo(12.5 * scale, -H - 26); ctx.lineTo(16 * scale, -H - 10); ctx.lineTo(9 * scale, -H - 10);
+    ctx.closePath(); ctx.fill();
+  }
+  if (n.kind === 'elder') {
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(10, -H + 16); ctx.lineTo(12, 0); ctx.stroke();
+  }
+  ctx.restore();
+
+  if (near) prompt(ctx, n.x, n.y - H - 22, n.name);
+}
+
+function prompt(ctx: CanvasRenderingContext2D, x: number, y: number, label: string): void {
+  ctx.font = '700 12px ui-sans-serif, system-ui';
+  ctx.textAlign = 'center';
+  const w = ctx.measureText(label).width + 34;
+  ctx.fillStyle = 'rgba(20,17,14,0.82)';
+  roundRect(ctx, x - w / 2, y - 15, w, 20, 6);
+  ctx.fill();
+  ctx.fillStyle = '#ffe28a';
+  ctx.fillText('[E] ' + label, x, y - 1);
 }
 
 export function drawTown(
-  ctx: CanvasRenderingContext2D, t: Town, st: GameState, near: Building | null,
+  ctx: CanvasRenderingContext2D, t: Town, st: GameState, near: Interact,
 ): void {
   const v: Village = st.village;
-  const tint = v.preset === 'thriving' ? 8 : -18;
-  drawGround(ctx, t.w, t.h, t.tiles, '#6d8f4f', '#7b9b58', tint);
+  const rich = v.preset === 'thriving';
+  const tint = rich ? 10 : -18;
+  drawGround(ctx, t.w, t.h, t.tiles, rich ? '#6f9250' : '#6b7a4c', rich ? '#7d9d58' : '#77855a', tint);
 
-  // dirt paths radiating from the square
+  // ------------------------------------------------------------- cobbles
   ctx.save();
-  ctx.strokeStyle = 'rgba(126,102,68,0.6)';
-  ctx.lineWidth = 30;
   ctx.lineCap = 'round';
+  for (const r of t.roads) {
+    ctx.strokeStyle = 'rgba(146,124,92,0.72)';
+    ctx.lineWidth = r.w;
+    ctx.beginPath(); ctx.moveTo(r.x1, r.y1); ctx.lineTo(r.x2, r.y2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(120,100,74,0.5)';
+    ctx.lineWidth = r.w - 10;
+    ctx.beginPath(); ctx.moveTo(r.x1, r.y1); ctx.lineTo(r.x2, r.y2); ctx.stroke();
+  }
+  // the square itself
   const cx = (t.w * TS) / 2, cy = (t.h * TS) / 2;
-  for (const b of t.buildings) {
+  ctx.fillStyle = 'rgba(146,124,92,0.72)';
+  ctx.beginPath(); ctx.ellipse(cx, cy, 250, 190, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(90,74,54,0.13)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
     ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(b.x + b.w / 2, b.y + b.d + 16);
+    ctx.moveTo(cx + Math.cos(a) * 70, cy + Math.sin(a) * 52);
+    ctx.lineTo(cx + Math.cos(a) * 248, cy + Math.sin(a) * 188);
     ctx.stroke();
   }
-  ctx.fillStyle = 'rgba(126,102,68,0.6)';
-  ctx.beginPath(); ctx.arc(cx, cy, 46, 0, Math.PI * 2); ctx.fill();
+  for (const rr of [110, 160, 210]) {
+    ctx.beginPath(); ctx.ellipse(cx, cy, rr, rr * 0.76, 0, 0, Math.PI * 2); ctx.stroke();
+  }
   ctx.restore();
 
-  // village well in the square
-  ctx.fillStyle = '#77716a';
-  ctx.beginPath(); ctx.ellipse(cx, cy, 18, 14, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#2b2723';
-  ctx.beginPath(); ctx.ellipse(cx, cy - 2, 12, 9, 0, 0, Math.PI * 2); ctx.fill();
+  // ------------------------------------------------------- depth-sorted pass
+  type R = { d: number; f: () => void };
+  const list: R[] = [];
 
-  type Renderable = { d: number; f: () => void };
-  const list: Renderable[] = [];
-
-  for (const dec of t.decor) {
-    list.push({
-      d: dec.y, f: () => {
-        if (dec.kind === 0) {
-          ctx.fillStyle = v.preset === 'thriving' ? '#8fb063' : '#7d8a56';
-          for (let i = 0; i < 3; i++) ctx.fillRect(dec.x - 4 + i * 4, dec.y - 6 - (i % 2) * 3, 2, 8);
-        } else if (dec.kind === 1) {
-          shadow(ctx, dec.x, dec.y, 13, 0.25);
-          ctx.fillStyle = '#6b4a2a'; ctx.fillRect(dec.x - 3, dec.y - 22, 6, 22);
-          ctx.fillStyle = v.preset === 'thriving' ? '#4d7c3c' : '#6a6b3a';
-          ctx.beginPath(); ctx.arc(dec.x, dec.y - 32, 16, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = 'rgba(255,255,255,0.10)';
-          ctx.beginPath(); ctx.arc(dec.x - 5, dec.y - 37, 7, 0, Math.PI * 2); ctx.fill();
-        } else {
-          ctx.fillStyle = '#8d8f96';
-          ctx.beginPath(); ctx.ellipse(dec.x, dec.y, 8, 6, 0, 0, Math.PI * 2); ctx.fill();
-        }
-      },
-    });
+  for (const p of t.props) {
+    const d = p.kind === 'fence' && p.variant === 2 ? p.y + 1 : p.y;
+    list.push({ d, f: () => drawProp(ctx, p, t.time, rich) });
   }
-
   for (const b of t.buildings) {
     list.push({
-      d: b.y + b.d, f: () => {
-        house(ctx, b);
+      d: b.y + b.d,
+      f: () => {
+        if (b.id === 'gate') gateHouse(ctx, b, t.time);
+        else house(ctx, b, t.time, 0.35);
+        if (!b.name) return;
         const sx = b.x + b.w / 2;
-        ctx.font = '600 12px ui-sans-serif, system-ui';
+        const isNear = near?.kind === 'building' && near.b.key === b.key;
+        ctx.font = '600 12.5px ui-sans-serif, system-ui';
         ctx.textAlign = 'center';
         const tw = ctx.measureText(b.name).width;
-        ctx.fillStyle = 'rgba(20,18,16,0.66)';
-        roundRect(ctx, sx - tw / 2 - 7, b.y - 30, tw + 14, 18, 5);
+        ctx.fillStyle = 'rgba(24,20,16,0.72)';
+        roundRect(ctx, sx - tw / 2 - 8, b.y - 46, tw + 16, 19, 6);
         ctx.fill();
-        ctx.fillStyle = near?.id === b.id ? '#ffe28a' : '#e8e2d4';
-        ctx.fillText(b.name, sx, b.y - 17);
-        if (near?.id === b.id) {
-          ctx.fillStyle = '#ffe28a';
-          ctx.font = '700 12px ui-sans-serif, system-ui';
-          ctx.fillText('[E] ' + b.prompt, sx, b.y + b.d + 32);
-        }
+        ctx.fillStyle = isNear ? '#ffe28a' : '#eee6d6';
+        ctx.fillText(b.name, sx, b.y - 32);
+        if (isNear && b.prompt) prompt(ctx, sx, b.y + b.d + 30, b.prompt);
       },
     });
   }
-
   for (const n of t.npcs) {
-    list.push({
-      d: n.y, f: () => {
-        shadow(ctx, n.x, n.y, 9, 0.22);
-        ctx.fillStyle = n.hue;
-        roundRect(ctx, n.x - 6, n.y - 26, 12, 20, 4); ctx.fill();
-        ctx.fillStyle = '#e0b98f';
-        ctx.beginPath(); ctx.arc(n.x, n.y - 30, 7, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#3a2a1c';
-        ctx.beginPath(); ctx.arc(n.x, n.y - 32, 7, Math.PI, Math.PI * 2); ctx.fill();
-      },
-    });
+    const isNear = near?.kind === 'npc' && near.n.id === n.id;
+    list.push({ d: n.y, f: () => drawTownNpc(ctx, n, isNear) });
   }
-
   list.push({
     d: t.py,
     f: () => drawHero(ctx, t.px, t.py, st.hero.appearance, t.facing, t.walkT,
@@ -262,4 +1029,51 @@ export function drawTown(
 
   list.sort((a, b) => a.d - b.d);
   for (const r of list) r.f();
+
+  // -------------------------------------------------------------- warm light
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of t.props) {
+    if (p.kind !== 'lantern') continue;
+    const post = p.variant === 1 ? 40 : 32;
+    const flick = 1 + Math.sin(t.time * 3.1 + p.x) * 0.06;
+    lanternGlow(ctx, p.x, p.y - post - 6, 86 * flick, 0.16);
+  }
+  for (const b of t.buildings) {
+    if (!b.warm) continue;
+    lanternGlow(ctx, b.x + b.w / 2, b.y + b.d * 0.78, 92, 0.06);
+  }
+  ctx.restore();
+
+  // ------------------------------------------------------------------ motes
+  ctx.save();
+  for (const m of t.motes) {
+    const k = Math.sin((m.t / m.life) * Math.PI);
+    ctx.globalAlpha = 0.34 * k;
+    ctx.fillStyle = '#fff2c8';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y - 40, m.s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Screen-space pass: the golden-hour wash that makes the place feel like home. */
+export function drawTownAmbience(ctx: CanvasRenderingContext2D, W: number, H: number): void {
+  ctx.save();
+  ctx.globalCompositeOperation = 'soft-light';
+  const g = ctx.createLinearGradient(0, 0, W * 0.4, H);
+  g.addColorStop(0, 'rgba(255, 206, 128, 0.55)');
+  g.addColorStop(1, 'rgba(120, 140, 200, 0.30)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  ctx.save();
+  const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.72);
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(24, 16, 10, 0.42)');
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
 }

@@ -19,6 +19,18 @@ export const TECHNIQUES: Technique[] = [
     desc: 'A short burst of speed. Brief invulnerability at the start of the move.',
   },
   {
+    id: 'jump', name: 'Vault', tier: 0, cost: 0, requires: [],
+    desc: 'A short hop. Airborne, nothing swinging at knee height can reach you.',
+  },
+  {
+    id: 'high_vault', name: 'High Vault', tier: 1, cost: 1, requires: ['jump'],
+    desc: 'Jump higher and hang a fraction longer. Still no floating.',
+  },
+  {
+    id: 'pounce', name: 'Pounce', tier: 3, cost: 3, requires: ['high_vault', 'momentum'],
+    desc: 'Attacking out of a jump lands for 60% extra and staggers.',
+  },
+  {
     id: 'long_stride', name: 'Long Stride', tier: 1, cost: 1, requires: ['dash'],
     desc: '+12% movement speed, always.',
   },
@@ -64,6 +76,8 @@ export function canLearn(known: string[], memory: number, t: Technique): boolean
 
 export interface DashProfile {
   charges: number;
+  /** hard gap between two dashes, so charges cannot be dumped in one frame */
+  lockout: number;
   cooldown: number;      // seconds to refill one charge
   duration: number;      // seconds of dash movement
   speed: number;         // multiplier on move speed
@@ -79,8 +93,8 @@ export function dashProfile(known: string[], footworkLevel: number): DashProfile
   if (known.includes('second_wind')) charges++;
   if (known.includes('third_wind')) charges++;
 
-  let cooldown = 1.15 * (1 - Math.min(0.45, footworkLevel * 0.015));
-  if (known.includes('quick_recovery')) cooldown *= 0.65;
+  let cooldown = 1.5 * (1 - Math.min(0.3, footworkLevel * 0.011));
+  if (known.includes('quick_recovery')) cooldown *= 0.72;
 
   const blink = known.includes('blink');
   const duration = blink ? 0.09 : 0.19;
@@ -88,6 +102,7 @@ export function dashProfile(known: string[], footworkLevel: number): DashProfile
 
   return {
     charges,
+    lockout: 0.34,
     cooldown,
     duration,
     speed: blink ? 7.5 : 3.4,
@@ -95,7 +110,7 @@ export function dashProfile(known: string[], footworkLevel: number): DashProfile
     momentum: known.includes('momentum'),
     bullRush: known.includes('bull_rush'),
     blink,
-    staminaCost: 18,
+    staminaCost: 26,
   };
 }
 

@@ -146,7 +146,7 @@ class Hud {
 
     const hints = scene === 'town'
       ? [['WASD', 'walk'], ['E', 'enter'], ['Tab', 'kit'], ['C', 'character'], ['K', 'techniques']]
-      : [['WASD', 'walk'], ['Click', 'attack'], ['Space', 'dash'], ['E', 'leave'], ['Tab', 'kit']];
+      : [['WASD', 'walk'], ['Click', 'attack'], ['Space', 'jump'], ['Shift', 'dash'], ['E', 'leave']];
     const sig = hints.map((h) => h[0]).join();
     if (this.hints.dataset.sig !== sig) {
       this.hints.dataset.sig = sig;

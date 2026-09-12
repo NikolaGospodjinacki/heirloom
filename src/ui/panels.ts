@@ -174,6 +174,8 @@ function statBlock(ctx: UICtx): HTMLElement {
     ['Crit', Math.round(d.crit * 100) + '%'],
     ['Swing rate', d.attackSpeed.toFixed(2) + 'x'],
     ['Dash charges', String(d.dash.charges)],
+    ['Chop power', d.chopPower > 0 ? d.chopPower.toFixed(1) + 'x' : 'bare hands'],
+    ['Mine power', d.minePower > 0 ? d.minePower.toFixed(1) + 'x' : 'bare hands'],
     ['vs beasts', '+' + Math.round((d.beastMult - 1) * 100) + '%'],
     ['vs everything else', '+' + Math.round((d.slayMult - 1) * 100) + '%'],
   ];
@@ -203,14 +205,15 @@ function bagPanel(ctx: UICtx): HTMLElement {
   const left = el('div', { style: 'display:flex;flex-direction:column;gap:8px' });
   const right = el('div', { style: 'display:flex;flex-direction:column;gap:8px' });
   for (const s of ['head', 'body', 'feet'] as EquipSlot[]) left.append(makeSlot(ctx, s).host);
-  for (const s of ['weapon', 'offhand'] as EquipSlot[]) right.append(makeSlot(ctx, s).host);
+  for (const s of ['weapon', 'offhand', 'tool'] as EquipSlot[]) right.append(makeSlot(ctx, s).host);
   doll.append(left, el('div', { class: 'cv' }, dollCanvas(ctx)), right);
 
   const dollCol = el('div', {});
   dollCol.append(
     doll,
     el('div', { class: 'muted center', style: 'margin-top:10px;width:290px' },
-      'Drag gear onto a slot, or double-click it in the pack. Trinkets and gems work from inside the pack.'),
+      'Drag gear onto a slot, or double-click it in the pack. Trinkets and gems work from inside the pack. '
+      + 'The tool slot is what chops and mines \u2014 your weapon has nothing to do with it.'),
   );
 
   // --- pack grid
@@ -878,20 +881,9 @@ function gatePanel(ctx: UICtx): HTMLElement {
   body.append(el('div', { class: 'sep' }));
   body.append(el('div', { class: 'muted' },
     'Health: ' + Math.ceil(st.hp) + ' / ' + d.maxHp +
-    '. Walking through the gate does not heal you.'));
+    '. The gate does not heal you \u2014 take a bed at the Gilded Sow first.'));
 
-  const cost = restCost(st);
-  const rest = el('button', { class: 'btn', style: 'margin-top:10px' }, 'Rest at the inn (' + cost + 'g)');
-  (rest as HTMLButtonElement).disabled = st.gold < cost || st.hp >= d.maxHp;
-  rest.addEventListener('click', () => {
-    st.gold -= cost;
-    st.hp = d.maxHp; st.mana = d.maxMana; st.stamina = d.maxStamina;
-    toast('You sleep until dawn');
-    refreshPanel(); ctx.refresh(); ctx.save();
-  });
-  body.append(rest);
-
-  return shell('Village Gate', 'Where the road starts.', body, 620);
+  return shell('City Gate', 'Where the road starts.', body, 620);
 }
 
 // ------------------------------------------------------------------ misc

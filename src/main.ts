@@ -5,19 +5,21 @@ import {
   drawBorder, drawDashTrail, drawDrop, drawExitPad, drawGround, drawHero, drawMob,
   drawNode, drawParticle, drawPopup, drawProjectile, drawSlash,
 } from './render/draw';
-import { gearLook } from './render/look';
-import { Town, buildTown, drawTown, nearestBuilding, tickTown } from './game/town';
-import { Zone, buildZone, tickZone, tryDash } from './game/zone';
+import { gearLook, swingPiece } from './render/look';
+import {
+  Town, buildTown, drawTown, drawTownAmbience, nearestInteract, tickTown,
+} from './game/town';
+import { Zone, buildZone, tickZone, tryDash, tryJump } from './game/zone';
 import {
   GameState, derived, die, lastMemoryEarned, load, newGame, pushLog, save,
   tickHomestead, wipe,
 } from './game/state';
 import { drawHud, resetHud } from './ui/hud';
 import {
-  closePanel, openPanel, panelOpen, refreshPanel, restockShop, setShopTab, UICtx,
+  closePanel, openPanel, panelOpen, refreshPanel, restCost, restockShop, setShopTab, UICtx,
 } from './ui/panels';
 import { closeDialogue, dialogueOpen, openDialogue } from './ui/dialogue';
-import { guildTalk, shopTalk, smithTalk } from './ui/talk';
+import { guildTalk, innRumour, innTalk, shopTalk, smithTalk, townsfolkTalk } from './ui/talk';
 import { clear, el, toast } from './ui/dom';
 import { cancelDrag } from './ui/grid';
 import { TRAITS } from './game/bloodline';
@@ -67,8 +69,10 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'e') { interact(); }
   else if (k === 'm') { if (st && st.scene === 'town') toggle('gate'); }
   else if (k === ' ') {
+    e.preventDefault();
+    if (st && st.scene === 'zone' && zone && !uiBlocking()) tryJump(zone, st);
+  } else if (k === 'shift') {
     if (st && st.scene === 'zone' && zone && !uiBlocking()) {
-      e.preventDefault();
       const [mx, my] = moveVector();
       tryDash(zone, st, mx, my);
     }
@@ -82,7 +86,13 @@ document.addEventListener('visibilitychange', () => {
 });
 
 canvas.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
-canvas.addEventListener('mousedown', (e) => { if (e.button === 0) mouseDown = true; });
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 0) mouseDown = true;
+  if (e.button === 2 && st && st.scene === 'zone' && zone && !uiBlocking()) {
+    const [mx, my] = moveVector();
+    tryDash(zone, st, mx, my);
+  }
+});
 window.addEventListener('mouseup', () => { mouseDown = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -112,11 +122,17 @@ function interact(): void {
     return;
   }
   if (st.scene !== 'town' || !town) return;
-  const b = nearestBuilding(town);
-  if (!b) return;
+  const hit = nearestInteract(town);
+  if (!hit) return;
   const c = uiCtx();
   const leave = () => { closeDialogue(); };
 
+  if (hit.kind === 'npc') {
+    openDialogue(townsfolkTalk(hit.n, st, leave));
+    return;
+  }
+
+  const b = hit.b;
   switch (b.id) {
     case 'guild':
       openDialogue(guildTalk(st, {
@@ -139,9 +155,33 @@ function interact(): void {
         leave,
       }));
       break;
+    case 'inn': openInn(); break;
     case 'home': openPanel('home', c); break;
     case 'gate': openPanel('gate', c); break;
+    default: break;
   }
+}
+
+function openInn(): void {
+  if (!st) return;
+  const cost = restCost(st);
+  const rest = () => {
+    if (!st) return;
+    const d = derived(st);
+    if (st.gold < cost) { toast('You cannot afford a bed'); return; }
+    if (st.hp >= d.maxHp && st.mana >= d.maxMana) { toast('You are already rested'); return; }
+    st.gold -= cost;
+    st.hp = d.maxHp; st.mana = d.maxMana; st.stamina = d.maxStamina;
+    pushLog(st, 'You slept at the inn.', 'good');
+    save(st);
+    closeDialogue();
+    toast('You sleep until dawn');
+  };
+  openDialogue(innTalk(st, cost, {
+    rest,
+    rumour: () => openDialogue(innRumour(st!, cost, { rest, leave: closeDialogue })),
+    leave: closeDialogue,
+  }));
 }
 
 // ----------------------------------------------------------------- scenes
@@ -160,9 +200,8 @@ function returnToTown(): void {
   st.scene = 'town';
   zone = null;
   town = buildTown(st);
-  const gate = town.buildings.find((b) => b.id === 'gate')!;
-  town.px = gate.x + gate.w / 2;
-  town.py = gate.y + gate.d + 46;
+  town.px = town.gateX;
+  town.py = town.gateY + 84;
   restockShop(st);
   save(st);
 }
@@ -355,8 +394,9 @@ function frame(now: number): void {
     clampCamera(cam, town.w * TS, town.h * TS, W, H);
     ctx.save();
     applyCamera(ctx, cam, W, H);
-    drawTown(ctx, town, st, blocked ? null : nearestBuilding(town));
+    drawTown(ctx, town, st, blocked ? null : nearestInteract(town));
     ctx.restore();
+    drawTownAmbience(ctx, W, H);
     drawHud(st, 'town', null);
 
     st.hp = Math.min(d.maxHp, st.hp + dt * (d.hpRegen * 2));
@@ -434,10 +474,16 @@ function renderZone(z: Zone, s: GameState): void {
   for (const dr of z.drops) list.push({ d: dr.y, f: () => drawDrop(ctx, dr) });
   list.push({
     d: z.py,
-    f: () => drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, {
-      hurt: z.hurtT, swing: z.swingT, swingMax: 0.2,
-      gear: gearLook(s.equipped), iframes: z.iframes,
-    }),
+    f: () => {
+      const harvesting = z.swingT > 0 && nearHarvest(z);
+      drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, {
+        hurt: z.hurtT, swing: z.swingT, swingMax: harvesting ? 0.22 : 0.2,
+        gear: swingPiece(gearLook(s.equipped), harvesting),
+        iframes: z.iframes,
+        z: z.jumpZ,
+        cast: z.castMax > 0 && z.castT > 0 ? 1 - z.castT / z.castMax : 0,
+      });
+    },
   });
   list.sort((a, b) => a.d - b.d);
   for (const r of list) r.f();
@@ -446,6 +492,15 @@ function renderZone(z: Zone, s: GameState): void {
   for (const p of z.projectiles) drawProjectile(ctx, p);
   for (const p of z.particles) drawParticle(ctx, p);
   for (const p of z.popups) drawPopup(ctx, p);
+}
+
+/** True when the swing currently playing is a harvest rather than an attack. */
+function nearHarvest(z: Zone): boolean {
+  for (const n of z.nodes) {
+    if (n.respawn > 0) continue;
+    if (Math.hypot(n.x - z.px, n.y - z.py) < 56) return true;
+  }
+  return false;
 }
 
 function paintBackdrop(): void {
