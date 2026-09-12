@@ -3,7 +3,7 @@ import { MONSTERS, MonsterDef, ZONES, ZoneDef } from './content';
 import { TS } from '../render/view';
 import type { Item, SkillKey } from './types';
 import { SKILL_COLOR, SKILL_NAMES } from './types';
-import { makeItem, ITEM_DEFS } from './items';
+import { makeItem, ITEM_DEFS, slotOf } from './items';
 import { autoPlace } from './backpack';
 import { GameState, derived, grantXp, pushLog, skillLevel } from './state';
 import { abilitiesFor, AbilityDef, AbilityKey } from './abilities';
@@ -1507,7 +1507,15 @@ export function tickZone(
       dr.y += (z.py - dr.y) * pull * 8 * dtRaw;
     }
     if (dr.t > 0.45 && dist < 28) {
-      if (autoPlace(st.bag, dr.item)) {
+      // an empty slot fills itself, so you see the change on the character
+      const slot = slotOf(dr.item);
+      if (slot && !st.equipped[slot]) {
+        st.equipped[slot] = dr.item;
+        popup(z, z.px, z.py - 54, 'equipped ' + dr.item.name, '#ffe28a', 13, 1.3);
+        burst(z, z.px, z.py - 24, 16, '#ffe28a', { speed: 120, size: 3, life: 0.6, up: 22, grav: 90 });
+        pushLog(st, 'Equipped ' + dr.item.name + '.', 'good');
+        dr.t = -999;
+      } else if (autoPlace(st.bag, dr.item)) {
         popup(z, z.px, z.py - 54, dr.item.name, '#cfe8b0', 12, 1);
         burst(z, z.px, z.py - 14, 5, ITEM_DEFS[dr.item.defId].color,
           { speed: 60, size: 2.4, life: 0.3, up: 12 });
