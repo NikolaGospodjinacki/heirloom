@@ -223,6 +223,10 @@ export interface Homestead {
     workers: number;
     progress: number;
     cost: number;
+    /** what the hired hands have piled up, waiting to be collected */
+    pending: number;
   }[];
   resources: Record<string, number>;
+  /** hands carry it straight to the store instead of leaving a pile */
+  autoCollect: boolean;
 }

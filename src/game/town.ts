@@ -29,7 +29,8 @@ export interface Building {
 export type PropKind =
   | 'lantern' | 'stall' | 'barrel' | 'crate' | 'flowerbed' | 'bench' | 'fence'
   | 'dummy' | 'rack' | 'signpost' | 'cart' | 'laundry' | 'bush' | 'tree'
-  | 'sapling' | 'pot' | 'haybale' | 'well' | 'banner' | 'crops';
+  | 'sapling' | 'pot' | 'haybale' | 'well' | 'banner' | 'crops'
+  | 'moat' | 'bridge' | 'shopsign' | 'lilypad';
 
 export interface Prop {
   kind: PropKind;
@@ -37,7 +38,10 @@ export interface Prop {
   variant: number;
   /** fence and laundry run to a second point */
   x2?: number; y2?: number;
+  /** moat and bridge are rectangles */
+  w?: number; h?: number;
   color?: string;
+  label?: string;
 }
 
 export type NpcKind = 'guard' | 'kid' | 'elder' | 'merchant' | 'folk' | 'cat';
@@ -77,6 +81,8 @@ export interface Town {
   walkT: number;
   time: number;
   gateX: number; gateY: number;
+  /** where the homestead plots are laid out, filled in at build time */
+  yard: { id: string; x: number; y: number }[];
 }
 
 export type Interact =
@@ -178,14 +184,28 @@ export function buildTown(st: GameState): Town {
   };
 
   // ------------------------------------------------------ the shop street
-  // A connected row of townhouses, north of the square. This is "the street".
-  const rowY = cy - 380;
-  const rowX = cx - 330;
-  B('bakery', 'bakery', 'Ostrun Bakery', rowX, rowY, 128, 108, '#b6a184', '#9d5f4a', null, 2);
-  B('shop', 'shop', 'General Store', rowX + 136, rowY, 150, 112, '#a89577', '#4f6b7a', 'buy & sell', 2);
-  B('apothecary', 'apothecary', 'Apothecary', rowX + 294, rowY, 120, 106, '#9fa887', '#5c6b4a', null, 2);
-  B('smith', 'smith', 'Smithy', rowX + 422, rowY + 6, 140, 112, '#8c7f74', '#584a44', 'enhance gear', 1);
-  B('tailor', 'tailor', 'Thimble & Thread', rowX + 570, rowY, 118, 104, '#b09a8e', '#7a5b7a', null, 2);
+  // Two facing rows down a narrow lane running north out of the square.
+  const laneX = cx;
+  const westX = laneX - 268, eastX = laneX + 118;
+  const step = 178;
+  const top = cy - 240;
+  B('bakery', 'bakery', 'Ostrun Bakery', westX, top, 150, 118, '#b6a184', '#9d5f4a', null, 2);
+  B('shop', 'shop', 'General Store', eastX, top + 26, 154, 122, '#a89577', '#4f6b7a', 'buy & sell', 2);
+  B('apothecary', 'apothecary', 'Apothecary', westX - 4, top - step, 142, 114, '#9fa887', '#5c6b4a', null, 2);
+  B('smith', 'smith', 'Smithy', eastX + 4, top - step + 14, 150, 118, '#8c7f74', '#584a44', 'enhance gear', 1);
+  B('tailor', 'tailor', 'Thimble & Thread', westX + 2, top - step * 2, 140, 112, '#b09a8e', '#7a5b7a', null, 2);
+  B('house', 'hs1', '', eastX - 2, top - step * 2 + 10, 138, 110, '#ad9a80', '#6a5b7a', null, 2);
+  // hanging signs and lanterns line the lane
+  for (let i = 0; i < 3; i++) {
+    props.push({ kind: 'shopsign', x: westX + 150, y: top - step * i + 44, variant: i, color: ['#9d5f4a', '#5c6b4a', '#7a5b7a'][i] });
+    props.push({ kind: 'shopsign', x: eastX - 6, y: top - step * i + 62, variant: i + 1, color: ['#4f6b7a', '#584a44', '#6a5b7a'][i] });
+    props.push({ kind: 'lantern', x: laneX - 74, y: top - step * i + 108, variant: 0 });
+    props.push({ kind: 'lantern', x: laneX + 74, y: top - step * i + 108, variant: 0 });
+    props.push({ kind: 'crate', x: westX + 158, y: top - step * i + 128, variant: 0 });
+    props.push({ kind: 'barrel', x: eastX - 16, y: top - step * i + 132, variant: 1 });
+  }
+  props.push({ kind: 'laundry', x: westX + 150, y: top - step - 20, x2: eastX, y2: top - step - 6, variant: 0 });
+  props.push({ kind: 'cart', x: laneX - 40, y: top - step * 2 - 60, variant: 0 });
 
   // ------------------------------------------------------------- the guild
   B('guild', 'guild', 'Adventurers Guild', cx - 620, cy - 150, 200, 160, '#9d8156', '#8c4a3f', 'quest board', 2);
@@ -222,9 +242,6 @@ export function buildTown(st: GameState): Town {
 
   // --------------------------------------------------------- your homestead
   B('home', 'home', 'Your Homestead', cx - 560, cy + 340, 168, 138, '#9a8560', '#6a7d4a', 'homestead & chest', 1);
-  for (let i = 0; i < 4; i++) {
-    props.push({ kind: 'crops', x: cx - 590 + i * 44, y: cy + 520, variant: i % 3 });
-  }
   props.push({ kind: 'pot', x: cx - 566, y: cy + 484, variant: 0 });
   props.push({ kind: 'laundry', x: cx - 400, y: cy + 400, x2: cx - 300, y2: cy + 430, variant: 0 });
 
@@ -242,6 +259,20 @@ export function buildTown(st: GameState): Town {
   const gateY = cy + 690;
   const gateX = cx;
   B('gate', 'gate', 'City Gate', gateX - 46, gateY - 40, 92, 96, '#8e8375', '#4a443c', 'set out', 1);
+
+  // A ditch outside the wall, and one wooden bridge across it.
+  const moatY = gateY + 74;
+  const moatH = 86;
+  props.push({ kind: 'moat', x: 0, y: moatY, w: W * TS, h: moatH, variant: 0 });
+  props.push({ kind: 'bridge', x: gateX - 62, y: moatY - 16, w: 124, h: moatH + 32, variant: 0 });
+  for (let i = 0; i < 7; i++) {
+    props.push({
+      kind: 'lilypad', variant: i % 3,
+      x: gateX + (i - 3) * 190 + (i % 2 ? 60 : -40), y: moatY + 22 + (i % 3) * 18,
+    });
+  }
+  props.push({ kind: 'lantern', x: gateX - 74, y: moatY + moatH + 22, variant: 1 });
+  props.push({ kind: 'lantern', x: gateX + 74, y: moatY + moatH + 22, variant: 1 });
 
   // wall running east and west of the gate
   for (let i = 1; i <= 9; i++) {
@@ -280,18 +311,15 @@ export function buildTown(st: GameState): Town {
   // ------------------------------------------------------- roads and lamps
   const road = (x1: number, y1: number, x2: number, y2: number, w = 62) =>
     roads.push({ x1, y1, x2, y2, w });
-  road(gateX, gateY + 20, cx, cy, 74);            // gate to square
-  road(cx, cy, cx, rowY + 150, 68);               // square to the shop street
-  road(rowX - 20, rowY + 150, rowX + 700, rowY + 150, 56); // the street itself
+  road(gateX, moatY + moatH + 40, cx, cy, 78);    // bridge to square
+  road(cx, cy, cx, top - step * 2 - 90, 96);      // the lane, running north
   road(cx, cy, cx + 470, cy + 40, 56);            // to the inn
   road(cx, cy, cx - 470, cy - 40, 56);            // to the guild
   road(cx - 300, cy + 40, cx - 500, cy + 350, 48); // to home
 
-  for (let i = 0; i < 7; i++) {
-    props.push({ kind: 'lantern', x: cx - 40, y: cy + 90 + i * 88, variant: 0 });
-  }
-  for (let i = 0; i < 5; i++) {
-    props.push({ kind: 'lantern', x: rowX - 10 + i * 176, y: rowY + 186, variant: 0 });
+  for (let i = 0; i < 6; i++) {
+    props.push({ kind: 'lantern', x: cx - 62, y: cy + 130 + i * 96, variant: 0 });
+    props.push({ kind: 'lantern', x: cx + 62, y: cy + 178 + i * 96, variant: 0 });
   }
 
   // ------------------------------------------------------ trees and greenery
@@ -363,6 +391,12 @@ export function buildTown(st: GameState): Town {
       colliders.push({ x: x0, y: p.y - 10, w: x1 - x0, h: 30 });
     }
     if (p.kind === 'well') colliders.push({ x: p.x - 26, y: p.y - 14, w: 52, h: 28 });
+    if (p.kind === 'moat' && p.w && p.h) {
+      const bridge = props.find((b) => b.kind === 'bridge');
+      const bx = bridge?.x ?? 0, bw = bridge?.w ?? 0;
+      colliders.push({ x: p.x, y: p.y, w: Math.max(0, bx - p.x), h: p.h });
+      colliders.push({ x: bx + bw, y: p.y, w: Math.max(0, p.x + p.w - bx - bw), h: p.h });
+    }
     if (p.kind === 'tree') colliders.push({ x: p.x - 10, y: p.y - 8, w: 20, h: 16 });
   }
 
@@ -375,8 +409,15 @@ export function buildTown(st: GameState): Town {
     });
   }
 
+  const yard = [
+    { id: 'herbs', x: cx - 596, y: cy + 524 },
+    { id: 'orchard', x: cx - 456, y: cy + 524 },
+    { id: 'vein', x: cx - 596, y: cy + 616 },
+    { id: 'font', x: cx - 456, y: cy + 616 },
+  ];
+
   return {
-    w: W, h: H, tiles, buildings, props, npcs, colliders, motes, roads,
+    w: W, h: H, tiles, buildings, props, npcs, colliders, motes, roads, yard,
     px: gateX, py: gateY + 96,
     facing: -Math.PI / 2, walkT: 0, time: 0,
     gateX, gateY: gateY + 40,
@@ -708,6 +749,79 @@ function drawProp(ctx: CanvasRenderingContext2D, p: Prop, t: number, rich: boole
       }
       break;
     }
+    case 'moat': {
+      const w = p.w ?? 0, h = p.h ?? 0;
+      ctx.fillStyle = '#3f5f6b';
+      ctx.fillRect(x, y, w, h);
+      const g = ctx.createLinearGradient(0, y, 0, y + h);
+      g.addColorStop(0, 'rgba(20,36,44,0.75)');
+      g.addColorStop(0.35, 'rgba(90,150,160,0.25)');
+      g.addColorStop(1, 'rgba(20,36,44,0.65)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x, y, w, h);
+      // banks
+      ctx.fillStyle = '#7a6a4f';
+      ctx.fillRect(x, y - 8, w, 10);
+      ctx.fillRect(x, y + h - 2, w, 10);
+      // ripples
+      ctx.strokeStyle = 'rgba(210,240,245,0.22)';
+      ctx.lineWidth = 1.6;
+      for (let i = 0; i < 26; i++) {
+        const rx = x + ((i * 173) % w);
+        const ry = y + 14 + ((i * 61) % (h - 28));
+        const ph = Math.sin(t * 1.6 + i) * 6;
+        ctx.beginPath();
+        ctx.moveTo(rx - 9 + ph, ry);
+        ctx.quadraticCurveTo(rx + ph, ry - 3, rx + 9 + ph, ry);
+        ctx.stroke();
+      }
+      break;
+    }
+    case 'lilypad':
+      ctx.fillStyle = ['#4a7a4a', '#568a52', '#3f6b42'][p.variant % 3];
+      ctx.beginPath();
+      ctx.ellipse(x + Math.sin(t * 0.7 + x * 0.01) * 3, y, 11, 7, 0, 0.4, Math.PI * 2 + 0.1);
+      ctx.fill();
+      if (p.variant === 1) {
+        ctx.fillStyle = '#e8b6d0';
+        ctx.beginPath(); ctx.arc(x + 2, y - 3, 3, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    case 'bridge': {
+      const w = p.w ?? 0, h = p.h ?? 0;
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.fillRect(x + 5, y + 8, w, h);
+      ctx.fillStyle = '#8a6440';
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = '#7a5636';
+      for (let py = y + 4; py < y + h - 3; py += 13) ctx.fillRect(x + 3, py, w - 6, 9);
+      // rails
+      ctx.fillStyle = '#6b4a2a';
+      ctx.fillRect(x - 6, y, 7, h);
+      ctx.fillRect(x + w - 1, y, 7, h);
+      for (let py = y; py < y + h; py += 30) {
+        ctx.fillRect(x - 8, py, 11, 7);
+        ctx.fillRect(x + w - 3, py, 11, 7);
+      }
+      break;
+    }
+    case 'shopsign': {
+      const c = p.color ?? '#8c4a3f';
+      ctx.strokeStyle = '#4a3a2a'; ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.moveTo(x, y - 46); ctx.lineTo(x, y - 30); ctx.stroke();
+      const sway = Math.sin(t * 1.2 + x * 0.02) * 0.06;
+      ctx.save();
+      ctx.translate(x, y - 30);
+      ctx.rotate(sway);
+      ctx.fillStyle = c;
+      roundRect(ctx, -16, 0, 32, 22, 4); ctx.fill();
+      ctx.strokeStyle = '#e8d9b8'; ctx.lineWidth = 1.6;
+      roundRect(ctx, -13, 3, 26, 16, 3); ctx.stroke();
+      ctx.fillStyle = '#e8d9b8';
+      ctx.beginPath(); ctx.arc(0, 11, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      break;
+    }
     case 'laundry': {
       if (p.x2 === undefined || p.y2 === undefined) break;
       ctx.strokeStyle = 'rgba(60,50,40,0.7)';
@@ -951,6 +1065,136 @@ function prompt(ctx: CanvasRenderingContext2D, x: number, y: number, label: stri
   ctx.fillText('[E] ' + label, x, y - 1);
 }
 
+const PLOT_TINT: Record<string, { bed: string; crop: string; accent: string }> = {
+  herb: { bed: '#57452f', crop: '#7fae52', accent: '#c8e08a' },
+  wood: { bed: '#4f3f2c', crop: '#4d7c3c', accent: '#8a6440' },
+  ore: { bed: '#4a4642', crop: '#95999f', accent: '#c9cdd6' },
+  gemdust: { bed: '#3f3a48', crop: '#57d4d0', accent: '#9be0d2' },
+};
+
+/**
+ * The homestead you can actually look at. Rows multiply with the plot level,
+ * a hired hand shows up for every wage you pay, and uncollected harvest piles
+ * in a basket until somebody carries it in.
+ */
+function drawPlot(
+  ctx: CanvasRenderingContext2D, x: number, y: number,
+  plot: { id: string; resource: string; owned: boolean; level: number; workers: number; pending: number },
+  t: number,
+): void {
+  const W = 116, H = 68;
+  const tint = PLOT_TINT[plot.resource] ?? PLOT_TINT.herb;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  roundRect(ctx, x + 4, y + 5, W, H, 6);
+  ctx.fill();
+
+  if (!plot.owned) {
+    ctx.fillStyle = '#6a6250';
+    roundRect(ctx, x, y, W, H, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 2;
+    roundRect(ctx, x + 3, y + 3, W - 6, H - 6, 5); ctx.stroke();
+    // for sale stake
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(x + W / 2 - 2, y + 6, 4, 26);
+    ctx.fillStyle = '#c8b69a';
+    roundRect(ctx, x + W / 2 - 22, y - 8, 44, 16, 3); ctx.fill();
+    ctx.fillStyle = '#5a4a38';
+    ctx.font = '700 9px ui-sans-serif, system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('FOR SALE', x + W / 2, y + 3);
+    ctx.restore();
+    return;
+  }
+
+  // tilled bed
+  ctx.fillStyle = tint.bed;
+  roundRect(ctx, x, y, W, H, 6); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 1.5;
+  roundRect(ctx, x, y, W, H, 6); ctx.stroke();
+
+  // one furrow per level, capped so it stays readable
+  const rows = Math.min(5, plot.level);
+  const rowH = (H - 12) / rows;
+  for (let r = 0; r < rows; r++) {
+    const ry = y + 6 + r * rowH + rowH / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.fillRect(x + 6, ry - rowH / 2 + 1, W - 12, rowH - 2);
+    const per = 4 + Math.min(4, plot.level);
+    for (let i = 0; i < per; i++) {
+      const cxp = x + 12 + (i * (W - 24)) / (per - 1);
+      const grow = 0.7 + 0.3 * Math.sin(t * 1.1 + i + r);
+      if (plot.resource === 'ore' || plot.resource === 'gemdust') {
+        ctx.fillStyle = tint.crop;
+        if (plot.resource === 'gemdust') { ctx.shadowColor = tint.accent; ctx.shadowBlur = 8; }
+        ctx.beginPath();
+        ctx.moveTo(cxp, ry - 7 * grow);
+        ctx.lineTo(cxp + 4, ry);
+        ctx.lineTo(cxp - 4, ry);
+        ctx.closePath(); ctx.fill();
+        ctx.shadowBlur = 0;
+      } else if (plot.resource === 'wood') {
+        ctx.fillStyle = '#6b4a2a';
+        ctx.fillRect(cxp - 1.4, ry - 8 * grow, 2.8, 8 * grow);
+        ctx.fillStyle = tint.crop;
+        ctx.beginPath(); ctx.arc(cxp, ry - 10 * grow, 5 * grow, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.strokeStyle = tint.crop;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cxp, ry);
+        ctx.lineTo(cxp + Math.sin(t * 1.6 + i) * 2, ry - 9 * grow);
+        ctx.stroke();
+        ctx.fillStyle = tint.accent;
+        ctx.beginPath(); ctx.arc(cxp + Math.sin(t * 1.6 + i) * 2, ry - 10 * grow, 2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // a hired hand for every wage
+  for (let i = 0; i < Math.min(6, plot.workers); i++) {
+    const a = t * 0.5 + i * 2.1;
+    const wx = x + 14 + ((i * 37) % (W - 28)) + Math.sin(a) * 9;
+    const wy = y + H + 12 + Math.cos(a * 0.8) * 5;
+    shadow(ctx, wx, wy, 7, 0.2);
+    const bob = Math.abs(Math.sin(a * 3)) * 2;
+    ctx.fillStyle = ['#7a6a52', '#6a7d4a', '#7a5b4a', '#5f7f6f'][i % 4];
+    roundRect(ctx, wx - 4.5, wy - 17 - bob, 9, 13, 3); ctx.fill();
+    ctx.fillStyle = '#e0b98f';
+    ctx.beginPath(); ctx.arc(wx, wy - 20 - bob, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c8a24b';
+    ctx.beginPath(); ctx.arc(wx, wy - 21 - bob, 6, Math.PI, Math.PI * 2); ctx.fill();
+  }
+
+  // the pile waiting to be carried in
+  const pend = Math.floor(plot.pending ?? 0);
+  if (pend > 0) {
+    const bx = x + W - 12, by = y - 6;
+    shadow(ctx, bx, by + 8, 12, 0.24);
+    ctx.fillStyle = '#8a6440';
+    roundRect(ctx, bx - 12, by - 8, 24, 16, 4); ctx.fill();
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 1.6;
+    roundRect(ctx, bx - 12, by - 8, 24, 16, 4); ctx.stroke();
+    const heap = Math.min(7, 1 + Math.floor(Math.log2(pend + 1)));
+    ctx.fillStyle = tint.crop;
+    for (let i = 0; i < heap; i++) {
+      ctx.beginPath();
+      ctx.arc(bx - 8 + (i % 4) * 5, by - 10 - Math.floor(i / 4) * 4, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const bounce = Math.abs(Math.sin(t * 3)) * 4;
+    ctx.fillStyle = '#ffe28a';
+    ctx.font = '800 15px ui-sans-serif, system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('!', bx, by - 26 - bounce);
+    ctx.font = '700 10px ui-sans-serif, system-ui';
+    ctx.fillStyle = '#e8dcc0';
+    ctx.fillText(String(pend), bx, by + 20);
+  }
+  ctx.restore();
+}
+
 export function drawTown(
   ctx: CanvasRenderingContext2D, t: Town, st: GameState, near: Interact,
 ): void {
@@ -993,7 +1237,12 @@ export function drawTown(
   const list: R[] = [];
 
   for (const p of t.props) {
-    const d = p.kind === 'fence' && p.variant === 2 ? p.y + 1 : p.y;
+    // water and the deck over it are ground, not scenery: they go under everything
+    const d = p.kind === 'moat' ? -99999
+      : p.kind === 'bridge' ? -99998
+        : p.kind === 'lilypad' ? -99997
+          : p.kind === 'fence' && p.variant === 2 ? p.y + 1
+            : p.y;
     list.push({ d, f: () => drawProp(ctx, p, t.time, rich) });
   }
   for (const b of t.buildings) {
@@ -1016,6 +1265,11 @@ export function drawTown(
         if (isNear && b.prompt) prompt(ctx, sx, b.y + b.d + 30, b.prompt);
       },
     });
+  }
+  for (const spot of t.yard) {
+    const plot = st.homestead.plots.find((pp) => pp.id === spot.id);
+    if (!plot) continue;
+    list.push({ d: spot.y + 30, f: () => drawPlot(ctx, spot.x, spot.y, plot, t.time) });
   }
   for (const n of t.npcs) {
     const isNear = near?.kind === 'npc' && near.n.id === n.id;

@@ -2,14 +2,17 @@ import './style.css';
 
 import { applyCamera, clampCamera, screenToWorldPoint, Camera, TS } from './render/view';
 import {
-  drawBorder, drawDashTrail, drawDrop, drawExitPad, drawGround, drawHero, drawMob,
-  drawNode, drawParticle, drawPopup, drawProjectile, drawSlash,
+  drawBackdrop, drawBorder, drawBossBar, drawChasm, drawCritter, drawDashTrail, drawDrop,
+  drawExitPad, drawFlora, drawGround, drawHero, drawMob, drawMote, drawNode, drawParticle,
+  drawPlateau, drawPopup, drawProjectile, drawSlash, drawTelegraph,
 } from './render/draw';
 import { gearLook, swingPiece } from './render/look';
 import {
   Town, buildTown, drawTown, drawTownAmbience, nearestInteract, tickTown,
 } from './game/town';
-import { Zone, buildZone, tickZone, tryDash, tryJump } from './game/zone';
+import { Zone, bossMob, buildZone, castAbility, tickZone, tryDash, tryJump } from './game/zone';
+import { MONSTERS } from './game/content';
+import type { AbilityKey } from './game/abilities';
 import {
   GameState, derived, die, lastMemoryEarned, load, newGame, pushLog, save,
   tickHomestead, wipe,
@@ -62,11 +65,21 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
   if (dialogueOpen()) return;           // the dialogue owns its own keys
+  const inZone = st && st.scene === 'zone' && zone && !uiBlocking();
+  // Abilities live on Q E R F because W A S D are the feet. 1-4 work as well.
+  const NUM_TO_KEY: Record<string, AbilityKey> = { '1': 'q', '2': 'f', '3': 'e', '4': 'r' };
+  const abilKey = NUM_TO_KEY[k] ?? (k === 'q' || k === 'e' || k === 'r' || k === 'f' ? k as AbilityKey : null);
+  if (inZone && abilKey) {
+    const [wx, wy] = screenToWorldPoint(cam, W, H, mouseX, mouseY);
+    castAbility(zone!, st!, abilKey, wx, wy);
+    return;
+  }
   if (k === 'tab') { e.preventDefault(); toggle('bag'); }
-  else if (k === 'c') { toggle('char'); }
-  else if (k === 'k') { toggle('tech'); }
+  else if (k === 'c') { if (!inZone) toggle('char'); }
+  else if (k === 'k') { if (!inZone) toggle('tech'); }
   else if (k === 'escape') { if (panelOpen()) { cancelDrag(); closePanel(); } }
   else if (k === 'e') { interact(); }
+  else if (k === 'x') { interact(); }
   else if (k === 'm') { if (st && st.scene === 'town') toggle('gate'); }
   else if (k === ' ') {
     e.preventDefault();
@@ -423,7 +436,7 @@ function frame(now: number): void {
       cam.zoom = targetZoom();
       cam.x += (zone.px - cam.x) * Math.min(1, dt * 8);
       cam.y += (zone.py - cam.y) * Math.min(1, dt * 8);
-      clampCamera(cam, zone.def.w * TS, zone.def.h * TS, W, H);
+      clampCamera(cam, zone.def.w * TS, zone.def.h * TS, W, H, 300);
 
       const shake = zone.shake;
       ctx.save();
@@ -434,6 +447,12 @@ function frame(now: number): void {
       renderZone(zone, st);
       ctx.restore();
       drawHud(st, 'zone', zone);
+
+      const boss = bossMob(zone);
+      if (boss) {
+        const bd = MONSTERS[boss.defId];
+        drawBossBar(ctx, W, bd.name, bd.title ?? '', boss.hp / boss.maxHp);
+      }
 
       if (zone.killGlow > 0) {
         ctx.fillStyle = 'rgba(255,240,200,' + zone.killGlow * 0.22 + ')';
@@ -462,26 +481,37 @@ function targetZoom(): number {
 }
 
 function renderZone(z: Zone, s: GameState): void {
+  drawBackdrop(ctx, z.def.w * TS, z.def.backdrop, cam.x, z.def.skyTop, z.def.skyBottom);
   drawGround(ctx, z.def.w, z.def.h, z.tiles, z.def.ground, z.def.ground2, 0);
+  for (const c of z.chasms) drawChasm(ctx, c);
+  // low ground first so tall ground overlaps it correctly
+  const tiers = [...z.plateaus].sort((a, b) => a.z - b.z);
+  for (const p of tiers) drawPlateau(ctx, p, z.def.ground2, z.def.ground);
   drawBorder(ctx, z.def.w, z.def.h);
   drawExitPad(ctx, z);
+  for (const tg of z.telegraphs) drawTelegraph(ctx, tg);
   drawDashTrail(ctx, z.dashTrail, s.hero.appearance);
 
   type R = { d: number; f: () => void };
   const list: R[] = [];
-  for (const n of z.nodes) list.push({ d: n.y, f: () => drawNode(ctx, n) });
-  for (const m of z.mobs) list.push({ d: m.y, f: () => drawMob(ctx, m) });
-  for (const dr of z.drops) list.push({ d: dr.y, f: () => drawDrop(ctx, dr) });
+  for (const f of z.flora) list.push({ d: f.y - f.gz, f: () => drawFlora(ctx, f, z.time) });
+  for (const n of z.nodes) list.push({ d: n.y - n.gz, f: () => drawNode(ctx, n) });
+  for (const m of z.mobs) list.push({ d: m.y - m.gz, f: () => drawMob(ctx, m) });
+  for (const dr of z.drops) list.push({ d: dr.y - dr.gz, f: () => drawDrop(ctx, dr) });
+  for (const c of z.critters) list.push({ d: c.y, f: () => drawCritter(ctx, c, z.time) });
+  const heroZ = z.groundZ + z.jumpZ;
   list.push({
-    d: z.py,
+    d: z.py - z.groundZ,
     f: () => {
       const harvesting = z.swingT > 0 && nearHarvest(z);
       drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, {
         hurt: z.hurtT, swing: z.swingT, swingMax: harvesting ? 0.22 : 0.2,
         gear: swingPiece(gearLook(s.equipped), harvesting),
         iframes: z.iframes,
-        z: z.jumpZ,
+        z: heroZ,
         cast: z.castMax > 0 && z.castT > 0 ? 1 - z.castT / z.castMax : 0,
+        shield: z.shield > 0,
+        spin: z.spinT > 0,
       });
     },
   });
@@ -491,6 +521,7 @@ function renderZone(z: Zone, s: GameState): void {
   for (const sl of z.slashes) drawSlash(ctx, sl);
   for (const p of z.projectiles) drawProjectile(ctx, p);
   for (const p of z.particles) drawParticle(ctx, p);
+  for (const mo of z.motes) drawMote(ctx, mo, z.def.ambienceColor, z.time);
   for (const p of z.popups) drawPopup(ctx, p);
 }
 

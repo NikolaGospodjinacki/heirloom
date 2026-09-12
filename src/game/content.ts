@@ -1,10 +1,43 @@
 import type { Quest, SkillKey } from './types';
 import { RNG, uid } from './rng';
 
+/**
+ * A single telegraphed move. Ordinary monsters have none and use the simple
+ * chase-and-swing path; anything with a list of these runs the boss brain.
+ */
+export interface MobAttack {
+  id: string;
+  name: string;
+  kind: 'arc' | 'charge' | 'slam' | 'cone' | 'volley' | 'summon';
+  /** furthest distance at which the boss will consider this move */
+  range: number;
+  minRange?: number;
+  windup: number;
+  cd: number;
+  /** multiplier on the monster attack stat */
+  dmg: number;
+  radius?: number;
+  arc?: number;
+  /** arc/cone moves fired behind the boss instead of in front */
+  behind?: boolean;
+  chargeSpeed?: number;
+  chargeTime?: number;
+  shots?: number;
+  spread?: number;
+  projSpeed?: number;
+  spawn?: string;
+  spawnCount?: number;
+  color: string;
+}
+
 export interface MonsterDef {
   id: string;
   name: string;
   family: 'beast' | 'ooze' | 'humanoid' | 'undead' | 'boss';
+  /** bosses run this list instead of the plain attack */
+  attacks?: MobAttack[];
+  /** drawn bigger and with a name plate over the health bar */
+  title?: string;
   /** ranged attackers fire a projectile instead of swinging */
   ranged?: { speed: number; color: string; size: number };
   /** telegraphed leap that closes distance before the swing */
@@ -90,18 +123,74 @@ export const MONSTERS: Record<string, MonsterDef> = {
     ranged: { speed: 210, color: '#c39bff', size: 8 },
   }),
   fangmaw: M({
-    id: 'fangmaw', name: 'Fangmaw, Terror of the Fen', family: 'boss', hp: 320, atk: 24, armor: 8, speed: 66, size: 26,
-    color: '#5d4038', accent: '#e2c35a', aggro: 340, attackRange: 40, attackCd: 1.25, xp: 260,
+    id: 'fangmaw', name: 'Fangmaw', title: 'Terror of the Fen', family: 'boss',
+    hp: 380, atk: 22, armor: 8, speed: 62, size: 28,
+    color: '#5d4038', accent: '#e2c35a', aggro: 420, attackRange: 46, attackCd: 1.25, xp: 300,
     gold: [90, 180], drops: [['monster_heart', 1], ['gem', 0.7], ['wolf_pelt', 0.8]], gearChance: 1,
     skill: 'slaying', danger: 6,
+    attacks: [
+      { id: 'maul', name: 'Maul', kind: 'arc', range: 82, windup: 0.52, cd: 2.6, dmg: 1, arc: 1.3, color: '#e2c35a' },
+      { id: 'pounce', name: 'Pounce', kind: 'charge', range: 340, minRange: 130, windup: 0.75, cd: 6.5, dmg: 1.35, chargeSpeed: 560, chargeTime: 0.45, color: '#d0603f' },
+      { id: 'howl', name: 'Howl', kind: 'summon', range: 500, windup: 1.1, cd: 16, dmg: 0, spawn: 'wolf', spawnCount: 2, color: '#cfd8e8' },
+    ],
+  }),
+  grovewarden: M({
+    id: 'grovewarden', name: 'The Grovewarden', title: 'Bear of Thornwood', family: 'boss',
+    hp: 520, atk: 26, armor: 10, speed: 58, size: 32,
+    color: '#6a4a33', accent: '#d8c9a8', aggro: 420, attackRange: 60, attackCd: 1.3, xp: 400,
+    gold: [130, 240], drops: [['monster_heart', 1], ['gem', 0.8], ['heartwood', 1]], gearChance: 1,
+    skill: 'hunting', danger: 6,
+    attacks: [
+      { id: 'swipe', name: 'Swipe', kind: 'arc', range: 96, windup: 0.5, cd: 2.4, dmg: 1, arc: 1.5, color: '#d8c9a8' },
+      { id: 'rush', name: 'Rush', kind: 'charge', range: 380, minRange: 150, windup: 0.85, cd: 7, dmg: 1.5, chargeSpeed: 600, chargeTime: 0.5, color: '#e06a4a' },
+      { id: 'stomp', name: 'Stomp', kind: 'slam', range: 130, windup: 0.95, cd: 8, dmg: 1.3, radius: 165, color: '#a8804a' },
+    ],
+  }),
+  quarry_golem: M({
+    id: 'quarry_golem', name: 'The Quarry Golem', title: 'It Was Here First', family: 'boss',
+    hp: 760, atk: 30, armor: 20, speed: 42, size: 34,
+    color: '#77767e', accent: '#9be0d2', aggro: 430, attackRange: 74, attackCd: 1.5, xp: 560,
+    gold: [200, 340], drops: [['monster_heart', 1], ['gem', 1], ['silver_ore', 1]], gearChance: 1,
+    skill: 'mining', danger: 7,
+    attacks: [
+      { id: 'slam', name: 'Slam', kind: 'slam', range: 120, windup: 1.05, cd: 4.5, dmg: 1.5, radius: 150, color: '#c8b06a' },
+      { id: 'boulders', name: 'Boulder Volley', kind: 'volley', range: 460, minRange: 130, windup: 0.9, cd: 6, dmg: 0.9, shots: 3, spread: 0.34, projSpeed: 290, color: '#9a9ea6' },
+      { id: 'sweep', name: 'Backhand', kind: 'arc', range: 110, windup: 0.6, cd: 3.2, dmg: 1.1, arc: 1.8, color: '#9be0d2' },
+    ],
   }),
   hollow_king: M({
-    id: 'hollow_king', name: 'The Hollow King', family: 'boss', hp: 520, atk: 33, armor: 12, speed: 60, size: 28,
-    color: '#4a4358', accent: '#9be0d2', aggro: 360, attackRange: 44, attackCd: 1.1, xp: 480,
+    id: 'hollow_king', name: 'The Hollow King', title: 'Crowned in the Dark', family: 'boss',
+    hp: 640, atk: 32, armor: 12, speed: 60, size: 30,
+    color: '#4a4358', accent: '#9be0d2', aggro: 420, attackRange: 52, attackCd: 1.1, xp: 620,
     gold: [180, 320], drops: [['monster_heart', 1], ['gem', 1], ['rotten_fang', 1]], gearChance: 1,
     skill: 'slaying', danger: 8,
+    attacks: [
+      { id: 'reap', name: 'Reap', kind: 'arc', range: 96, windup: 0.45, cd: 2.2, dmg: 1, arc: 1.6, color: '#9be0d2' },
+      { id: 'grasp', name: 'Grasping Dark', kind: 'slam', range: 260, windup: 1.0, cd: 6, dmg: 1.2, radius: 130, color: '#7a5fa8' },
+      { id: 'court', name: 'Call the Court', kind: 'summon', range: 520, windup: 1.2, cd: 14, dmg: 0, spawn: 'ghoul', spawnCount: 3, color: '#b8a0e0' },
+    ],
+  }),
+  emberwyrm: M({
+    id: 'emberwyrm', name: 'Emberwyrm', title: 'The Thing On The Hill', family: 'boss',
+    hp: 1100, atk: 38, armor: 16, speed: 54, size: 42,
+    color: '#8c3f34', accent: '#e8a33d', aggro: 520, attackRange: 90, attackCd: 1.2, xp: 1100,
+    gold: [420, 720], drops: [['monster_heart', 1], ['gem', 1], ['silver_ore', 1], ['heartwood', 1]], gearChance: 1,
+    skill: 'slaying', danger: 10,
+    attacks: [
+      { id: 'breath', name: 'Ember Breath', kind: 'cone', range: 300, windup: 1.15, cd: 6.5, dmg: 1.4, arc: 0.55, color: '#e8703d' },
+      { id: 'buffet', name: 'Wing Buffet', kind: 'slam', range: 150, windup: 0.7, cd: 7, dmg: 1.1, radius: 190, color: '#e8c15a' },
+      { id: 'tail', name: 'Tail Sweep', kind: 'arc', range: 130, windup: 0.55, cd: 3.4, dmg: 1.25, arc: 2.4, behind: true, color: '#c96b3a' },
+      { id: 'spit', name: 'Cinder Spit', kind: 'volley', range: 520, minRange: 200, windup: 0.85, cd: 5.5, dmg: 0.85, shots: 5, spread: 0.5, projSpeed: 300, color: '#e8703d' },
+    ],
   }),
 };
+
+/** Bosses that can be rolled as a contract, cheapest first. */
+export const BOSS_POOL = ['fangmaw', 'grovewarden', 'quarry_golem', 'hollow_king', 'emberwyrm'];
+
+export type Backdrop = 'none' | 'hills' | 'mountains' | 'crags' | 'peaks';
+export type Terrain = 'flat' | 'rolling' | 'ridge' | 'broken';
+export type Ambience = 'pollen' | 'leaves' | 'mist' | 'embers' | 'fireflies';
 
 export interface ZoneDef {
   id: string;
@@ -118,36 +207,71 @@ export interface ZoneDef {
   danger: number;
   treeLoot: [string, number][];
   rockLoot: [string, number][];
+  backdrop: Backdrop;
+  terrain: Terrain;
+  ambience: Ambience;
+  ambienceColor: string;
+  /** scattered dressing: bushes, flowers, mushrooms, stumps, reeds */
+  flora: number;
+  /** the boss that lives here */
+  boss: string;
+  /** critters that flee from you */
+  critters: number;
+  skyTop: string;
+  skyBottom: string;
 }
 
 export const ZONES: Record<string, ZoneDef> = {
   meadow: {
     id: 'meadow', name: 'Kestrel Meadow', desc: 'Boars, bees and long grass. Where every apprentice starts.',
-    w: 34, h: 34, ground: '#5f8c4a', ground2: '#6c9a53', density: 12, trees: 22, rocks: 8, danger: 1,
+    w: 36, h: 36, ground: '#5f8c4a', ground2: '#6c9a53', density: 12, trees: 26, rocks: 8, danger: 1,
     spawns: [['boar', 0.5], ['slime', 0.3], ['spitter', 0.2]],
     treeLoot: [['log', 0.9], ['heartwood', 0.05]],
     rockLoot: [['iron_ore', 0.8], ['gem', 0.05], ['silver_ore', 0.12]],
+    backdrop: 'hills', terrain: 'rolling', ambience: 'pollen', ambienceColor: '#fff2b0',
+    flora: 150, boss: 'fangmaw', critters: 10,
+    skyTop: '#8fb8d8', skyBottom: '#cfe0c0',
   },
   woods: {
-    id: 'woods', name: 'Thornwood', desc: 'Old trees, older wolves. Goblins keep a camp somewhere in here.',
-    w: 38, h: 38, ground: '#3f6b3c', ground2: '#4a7a44', density: 16, trees: 46, rocks: 10, danger: 2,
+    id: 'woods', name: 'Thornwood', desc: 'Old trees, older wolves, and something big that the guild will not name.',
+    w: 42, h: 42, ground: '#3f6b3c', ground2: '#4a7a44', density: 16, trees: 78, rocks: 12, danger: 2,
     spawns: [['wolf', 0.35], ['goblin', 0.3], ['archer', 0.2], ['boar', 0.15]],
     treeLoot: [['log', 0.85], ['heartwood', 0.14]],
     rockLoot: [['iron_ore', 0.7], ['silver_ore', 0.2], ['gem', 0.08]],
+    backdrop: 'hills', terrain: 'rolling', ambience: 'leaves', ambienceColor: '#c8b06a',
+    flora: 210, boss: 'grovewarden', critters: 14,
+    skyTop: '#6f8f9c', skyBottom: '#9db08a',
   },
   fen: {
     id: 'fen', name: 'Mireholt Fen', desc: 'Bandit country. Wet, cold, and worth good coin.',
-    w: 40, h: 40, ground: '#4d5f4a', ground2: '#586b52', density: 18, trees: 20, rocks: 16, danger: 3,
+    w: 44, h: 44, ground: '#4d5f4a', ground2: '#586b52', density: 18, trees: 30, rocks: 18, danger: 3,
     spawns: [['bandit', 0.34], ['ghoul', 0.22], ['wolf', 0.22], ['archer', 0.22]],
     treeLoot: [['log', 0.7], ['heartwood', 0.25]],
     rockLoot: [['iron_ore', 0.55], ['silver_ore', 0.3], ['gem', 0.14]],
+    backdrop: 'crags', terrain: 'broken', ambience: 'mist', ambienceColor: '#cfe0e8',
+    flora: 170, boss: 'fangmaw', critters: 8,
+    skyTop: '#6a7480', skyBottom: '#8a917f',
   },
   barrows: {
     id: 'barrows', name: 'The Sunken Barrows', desc: 'Nobody who goes deep comes back the same. Or at all.',
-    w: 42, h: 42, ground: '#4a4550', ground2: '#544e5c', density: 22, trees: 8, rocks: 24, danger: 5,
+    w: 46, h: 46, ground: '#4a4550', ground2: '#544e5c', density: 22, trees: 10, rocks: 30, danger: 5,
     spawns: [['ghoul', 0.4], ['hexer', 0.3], ['bandit', 0.18], ['archer', 0.12]],
     treeLoot: [['log', 0.5], ['heartwood', 0.4]],
     rockLoot: [['silver_ore', 0.45], ['gem', 0.28], ['iron_ore', 0.27]],
+    backdrop: 'crags', terrain: 'broken', ambience: 'fireflies', ambienceColor: '#9be0d2',
+    flora: 120, boss: 'hollow_king', critters: 4,
+    skyTop: '#3d3a4a', skyBottom: '#5d5560',
+  },
+  ridge: {
+    id: 'ridge', name: 'Cinder Ridge',
+    desc: 'A climb, and something asleep at the top of it. Bring rope and better ideas.',
+    w: 46, h: 46, ground: '#6b4a3d', ground2: '#7a5645', density: 16, trees: 14, rocks: 34, danger: 7,
+    spawns: [['hexer', 0.3], ['archer', 0.25], ['ghoul', 0.25], ['bandit', 0.2]],
+    treeLoot: [['log', 0.6], ['heartwood', 0.35]],
+    rockLoot: [['silver_ore', 0.4], ['gem', 0.35], ['iron_ore', 0.25]],
+    backdrop: 'peaks', terrain: 'ridge', ambience: 'embers', ambienceColor: '#e8873d',
+    flora: 90, boss: 'emberwyrm', critters: 2,
+    skyTop: '#8a4a3f', skyBottom: '#d8894f',
   },
 };
 
@@ -171,7 +295,7 @@ const BOSS_FLAVOR = [
 
 export function rollQuests(r: RNG, count: number, prosperity: number, tier: number): Quest[] {
   const out: Quest[] = [];
-  const zonePool = ['meadow', 'woods', 'fen', 'barrows'].slice(0, Math.min(4, 1 + tier));
+  const zonePool = ['meadow', 'woods', 'fen', 'barrows', 'ridge'].slice(0, Math.min(5, 1 + tier));
   for (let i = 0; i < count; i++) {
     const zoneId = r.pick(zonePool);
     const zone = ZONES[zoneId];
@@ -181,7 +305,7 @@ export function rollQuests(r: RNG, count: number, prosperity: number, tier: numb
     const prosMult = 0.8 + prosperity / 100 * 0.5;
 
     if (bossOk) {
-      const bossId = tier >= 4 ? r.pick(['fangmaw', 'hollow_king']) : 'fangmaw';
+      const bossId = ZONES[zoneId].boss;
       const m = MONSTERS[bossId];
       q = {
         id: uid(), title: 'Contract: ' + m.name, kind: 'boss', target: bossId, targetName: m.name,

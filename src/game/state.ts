@@ -75,9 +75,10 @@ function newHomestead(): Homestead {
   return {
     plots: PLOT_DEFS.map((p, i) => ({
       id: p.id, name: p.name, resource: p.resource,
-      owned: i === 0, level: 1, workers: 0, progress: 0, cost: p.cost,
+      owned: i === 0, level: 1, workers: 0, progress: 0, cost: p.cost, pending: 0,
     })),
     resources: { herb: 0, wood: 0, ore: 0, gemdust: 0 },
+    autoCollect: false,
   };
 }
 
@@ -354,6 +355,7 @@ export function pushLog(st: GameState, t: string, kind = 'info'): void {
 
 export function tickHomestead(st: GameState, dt: number): void {
   for (const plot of st.homestead.plots) {
+    if (plot.pending === undefined) plot.pending = 0;
     if (!plot.owned || plot.workers <= 0) continue;
     const d = PLOT_DEFS.find((p) => p.id === plot.id)!;
     const rate = plot.workers * plot.level / d.secs;
@@ -361,9 +363,30 @@ export function tickHomestead(st: GameState, dt: number): void {
     if (plot.progress >= 1) {
       const got = Math.floor(plot.progress);
       plot.progress -= got;
-      st.homestead.resources[plot.resource] += got * d.per;
+      // hands leave the harvest by the gate; somebody has to carry it in
+      if (st.homestead.autoCollect) st.homestead.resources[plot.resource] += got * d.per;
+      else plot.pending += got * d.per;
     }
   }
+}
+
+export function pendingTotal(st: GameState): number {
+  return st.homestead.plots.reduce((a, p) => a + (p.pending ?? 0), 0);
+}
+
+export function collectPlot(st: GameState, plotId: string): number {
+  const plot = st.homestead.plots.find((p) => p.id === plotId);
+  if (!plot || !plot.pending) return 0;
+  const got = Math.floor(plot.pending);
+  plot.pending -= got;
+  st.homestead.resources[plot.resource] += got;
+  return got;
+}
+
+export function collectAll(st: GameState): number {
+  let total = 0;
+  for (const p of st.homestead.plots) total += collectPlot(st, p.id);
+  return total;
 }
 
 export function clickPlot(st: GameState, plotId: string): number {
@@ -483,6 +506,8 @@ export function load(): GameState | null {
     }
     if (!st.equipped) st.equipped = emptyEquipment();
     if (st.equipped.tool === undefined) (st.equipped as Equipment).tool = null;
+    if (st.homestead.autoCollect === undefined) st.homestead.autoCollect = false;
+    for (const pl of st.homestead.plots) if (pl.pending === undefined) pl.pending = 0;
     if (!st.techniques.includes('jump')) st.techniques.push('jump');
     if (!st.techniques) st.techniques = ['dash'];
     if (typeof st.memory !== 'number') st.memory = 0;

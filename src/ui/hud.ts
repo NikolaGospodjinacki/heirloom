@@ -2,6 +2,7 @@ import { ZONES } from '../game/content';
 import { SKILL_COLOR, SKILL_NAMES } from '../game/types';
 import { levelProgress } from '../game/bloodline';
 import { GameState, derived, lastXp } from '../game/state';
+import { abilitiesFor } from '../game/abilities';
 import type { Zone } from '../game/zone';
 import { clear, el, fmt } from './dom';
 
@@ -22,6 +23,11 @@ class Hud {
   quest = el('div', { class: 'questcard' });
   logbox = el('div', { class: 'logbox' });
   hints = el('div', { class: 'hud-br' });
+  bar4 = el('div', { class: 'abilitybar' });
+  slots: {
+    root: HTMLElement; fill: HTMLElement; cdText: HTMLElement; id: string;
+  }[] = [];
+  slotSig = '';
   ping = el('div', { class: 'skillping' });
   pingName = el('span', {});
   pingLevel = el('b', {});
@@ -54,7 +60,7 @@ class Hud {
     );
     this.ping.style.opacity = '0';
 
-    this.root.append(tl, tr, bl, this.hints, this.ping);
+    this.root.append(tl, tr, bl, this.hints, this.ping, this.bar4);
     this.built = true;
   }
 
@@ -144,9 +150,45 @@ class Hud {
       }
     }
 
+    // ---- QWER
+    const abils = abilitiesFor(s.hero.classId);
+    const barSig = scene + abils.map((a) => a.id).join();
+    if (this.slotSig !== barSig) {
+      this.slotSig = barSig;
+      clear(this.bar4);
+      this.slots = [];
+      this.bar4.style.display = scene === 'zone' ? 'flex' : 'none';
+      for (const a of abils) {
+        const fill = el('i', { class: 'cdfill' });
+        const cdText = el('span', { class: 'cdnum' });
+        const root = el('div', { class: 'abil', style: '--c:' + a.color },
+          el('b', { class: 'glyph' }, a.glyph),
+          el('span', { class: 'kb' }, a.key.toUpperCase()),
+          el('span', { class: 'nm' }, a.name),
+          fill, cdText);
+        root.title = a.name + ' \u2014 ' + a.desc;
+        this.bar4.append(root);
+        this.slots.push({ root, fill, cdText, id: a.id });
+      }
+    }
+    this.bar4.style.display = scene === 'zone' ? 'flex' : 'none';
+    if (scene === 'zone') {
+      abils.forEach((a, i) => {
+        const slot = this.slots[i];
+        if (!slot) return;
+        const cd = zone ? (zone.abilityCd[a.id] ?? 0) : 0;
+        const have = a.resource === 'mana' ? s.mana : s.stamina;
+        const poor = have < a.cost;
+        slot.root.classList.toggle('cooling', cd > 0);
+        slot.root.classList.toggle('poor', cd <= 0 && poor);
+        slot.fill.style.height = (cd > 0 ? (cd / a.cd) * 100 : 0) + '%';
+        slot.cdText.textContent = cd > 0 ? String(Math.ceil(cd)) : '';
+      });
+    }
+
     const hints = scene === 'town'
       ? [['WASD', 'walk'], ['E', 'enter'], ['Tab', 'kit'], ['C', 'character'], ['K', 'techniques']]
-      : [['WASD', 'walk'], ['Click', 'attack'], ['Space', 'jump'], ['Shift', 'dash'], ['E', 'leave']];
+      : [['Click', 'attack'], ['Q E R F', 'skills'], ['Space', 'jump'], ['Shift', 'dash'], ['X', 'leave']];
     const sig = hints.map((h) => h[0]).join();
     if (this.hints.dataset.sig !== sig) {
       this.hints.dataset.sig = sig;

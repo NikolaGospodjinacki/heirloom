@@ -23,9 +23,11 @@ npm run dev
 | `WASD` | walk |
 | mouse | aim |
 | left click | attack |
+| `Q` `E` `R` `F` | the four skills (also `1` `2` `3` `4`) |
 | `Space` | jump (airborne clears anything swinging at knee height) |
 | `Shift` / right click | dash (i-frames, costs stamina and a charge) |
-| `E` | enter a building / leave a zone |
+| `E` | enter a building, in town |
+| `X` | leave a zone, standing on the road-home pad |
 | `Tab` | kit — paper doll and pack |
 | `C` | character — attributes and skills |
 | `K` | techniques — the movement tree |
@@ -62,6 +64,36 @@ are solid — you walk around them, sliding along instead of sticking.
 
 A thriving village has more stalls, more people, greener trees and flowers in the hedges. A
 struggling one is emptier and greyer, and everybody says so.
+
+## Skills on the bar
+
+Four abilities, class-specific, on **Q E R F** (W is a foot, so the second slot moved to F;
+`1`-`4` work too). Warriors pay **stamina**, so every skill competes with a dash. Wizards
+pay **mana**, so every skill competes with attacking.
+
+| | Warrior | Wizard |
+|---|---|---|
+| Q | **Cleave** — 160% in a wide arc, shoves everything back | **Frost Lance** — pierces a line for 150% and halves their speed |
+| F | **Shield Bash** — shoulder forward, stun a second and a half | **Arcane Nova** — detonate where you stand, throw everything off |
+| E | **Rally** — heal a fifth, +35% damage for six seconds | **Mana Font** — 45% mana back and a shield worth a quarter of your health |
+| R | **Whirlwind** — spin for 1.5s hitting everything, four times, while walking | **Meteor** — a rock lands where the cursor is, for 320% |
+
+## Terrain and the climb
+
+Zones have real elevation. Ledges have to be **jumped onto** — a short hop will not clear the
+lip — and you can walk off them and fall. **Ravines** are walls until you are airborne, and
+landing in one hurts. **Cinder Ridge** is five stepped tiers climbing north with something
+asleep at the top, snow-capped peaks parallaxing behind it.
+
+## Bosses
+
+Five, each with a named move set, floor telegraphs and a health bar across the top:
+
+- **Fangmaw** — maul, pounce, and a howl that brings wolves
+- **The Grovewarden** — swipe, a charge across the clearing, and a stomp
+- **The Quarry Golem** — slam, a three-boulder volley, and a backhand
+- **The Hollow King** — reap, grasping dark, and a call for the court
+- **Emberwyrm** — ember breath in a cone, wing buffet, tail sweep behind, cinder spit
 
 ## Systems
 
@@ -175,16 +207,39 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
   paper-doll layering is in place for when sprites land.
 - No collision with buildings, trees or rocks — you walk through everything.
 - No sound at all. This is the biggest missing multiplier on how the hits feel.
-- Monster AI is chase, shoot, or leap, each with a telegraph. No packs or formations yet.
+- Ordinary monster AI is chase, shoot, or leap. Bosses pick from a move list. No packs yet.
+- No co-op. See below.
 - Boss contracts spawn the boss but there is no arena or fight structure.
 - The classes differ by starting gear, stat weights and weapon style; no class abilities
   beyond the shared dash.
 - Village presets are two colour/population states, not the bigger-or-smaller layouts
   originally described.
 
+## Hosting
+
+Pushed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`. The build
+is ~180 KB of JS, 61 KB gzipped, no backend, saves in `localStorage` — so anyone with the
+link plays their own instance immediately.
+
+## On co-op
+
+Not built, and not something to bolt on quickly. The honest shape of it:
+
+- **Static hosting cannot do it.** Real-time co-op needs either a relay server or WebRTC
+  peer-to-peer with a signalling broker.
+- **The design is single-player at the root.** Death rolls an heir and ages the village.
+  Two players sharing one village needs an answer for whose bloodline it is, what happens
+  when one dies, and whether the pack is shared. That is a design question before it is a
+  networking one.
+- **The cheap version that would actually work:** host-authoritative WebRTC, one player
+  hosts and shares a room code, the host simulates all monsters and the guest sends inputs
+  and gets snapshots. Two-player only, drop-in for a single zone run, town stays solo.
+  That is a focused project, not an afternoon.
+
 ## Next up (rough order)
 
 1. Sound — hits, footsteps, level-ups, a town theme and a field theme.
+2. Co-op over WebRTC, if the hosted build gets people playing.
 2. Collision in the field too — town is solid, zones are not yet.
 3. Class abilities on a hotbar so warrior and wizard actually play differently.
 4. Adjacency bonuses in the pack — the other half of the Backpack Battles idea.

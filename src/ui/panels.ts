@@ -8,8 +8,9 @@ import { levelProgress } from '../game/bloodline';
 import { ZONES } from '../game/content';
 import { TECHNIQUES, canLearn, techById } from '../game/techniques';
 import {
-  GameState, PLOT_DEFS, RESOURCE_NAMES, clickPlot, completeQuest, derived, equip,
-  refreshBoard, rollShopStock, skillLevel, unequip, upgradeCost, workerCost, pushLog,
+  GameState, PLOT_DEFS, RESOURCE_NAMES, clickPlot, collectAll, collectPlot,
+  completeQuest, derived, equip, pendingTotal, refreshBoard, rollShopStock, skillLevel,
+  unequip, upgradeCost, workerCost, pushLog,
 } from '../game/state';
 import { rng } from '../game/rng';
 import { drawHero } from '../render/draw';
@@ -760,6 +761,26 @@ function homePanel(ctx: UICtx): HTMLElement {
     res.append(rr);
     content.append(res);
 
+    const waiting = pendingTotal(st);
+    const collectRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:12px' });
+    const collect = el('button', { class: 'btn primary' },
+      waiting > 0 ? 'Collect ' + fmt(waiting) + ' from the yard' : 'Nothing to collect');
+    (collect as HTMLButtonElement).disabled = waiting <= 0;
+    collect.addEventListener('click', () => {
+      const got = collectAll(st);
+      toast('Carried in ' + fmt(got));
+      draw(); ctx.refresh(); ctx.save();
+    });
+    const auto = el('button', { class: 'btn small' + (st.homestead.autoCollect ? ' primary' : '') },
+      st.homestead.autoCollect ? 'Hands carry it in' : 'Hands leave it in the yard');
+    auto.addEventListener('click', () => {
+      st.homestead.autoCollect = !st.homestead.autoCollect;
+      if (st.homestead.autoCollect) collectAll(st);
+      draw(); ctx.refresh(); ctx.save();
+    });
+    collectRow.append(collect, auto);
+    content.append(collectRow);
+
     const grid = el('div', { class: 'grid2' });
     for (const plot of st.homestead.plots) {
       const pd = PLOT_DEFS.find((x) => x.id === plot.id)!;
@@ -792,6 +813,15 @@ function homePanel(ctx: UICtx): HTMLElement {
         });
         card.append(harvest, gain);
         card.append(el('div', { class: 'prog' }, el('i', { style: 'width:' + plot.progress * 100 + '%' })));
+        if ((plot.pending ?? 0) > 0) {
+          const pick = el('button', { class: 'btn small primary' },
+            'Pick up ' + fmt(plot.pending) + ' ' + RESOURCE_NAMES[plot.resource]);
+          pick.addEventListener('click', () => {
+            collectPlot(st, plot.id);
+            draw(); ctx.refresh(); ctx.save();
+          });
+          card.append(pick);
+        }
 
         const wc = workerCost(plot);
         const uc = upgradeCost(plot);

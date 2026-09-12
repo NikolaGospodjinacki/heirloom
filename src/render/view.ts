@@ -30,11 +30,14 @@ export function applyCamera(ctx: CanvasRenderingContext2D, cam: Camera, w: numbe
 }
 
 /** Keep the camera inside the map; centre it when the map is smaller than the screen. */
-export function clampCamera(cam: Camera, worldW: number, worldH: number, w: number, h: number): void {
+export function clampCamera(
+  cam: Camera, worldW: number, worldH: number, w: number, h: number, padTop = 0,
+): void {
   const hw = w / 2 / cam.zoom;
   const hh = h / 2 / cam.zoom;
   cam.x = worldW <= hw * 2 ? worldW / 2 : Math.max(hw, Math.min(worldW - hw, cam.x));
-  cam.y = worldH <= hh * 2 ? worldH / 2 : Math.max(hh, Math.min(worldH - hh, cam.y));
+  const top = hh - padTop;
+  cam.y = worldH <= hh * 2 ? worldH / 2 : Math.max(top, Math.min(worldH - hh, cam.y));
 }
 
 export function screenToWorldPoint(cam: Camera, w: number, h: number, px: number, py: number): [number, number] {
