@@ -1,10 +1,15 @@
 # Heirloom
 
-A top-down fantasy RPG roguelite where **the run is a life and the save is a bloodline**.
+A first-person fantasy RPG roguelite where **the run is a life and the save is a bloodline**.
 You die, an heir is rolled with random stats and a random face, the village ages around
 you, and a slice of what you learned survives as instinct.
 
-Working prototype. All art is canvas primitives — no sprites yet.
+Working prototype. Low-poly three.js, no imported art yet — every mesh is built from boxes,
+cones and spheres in code.
+
+**Two builds ship from this repo.** `/` is the first-person 3D game. `/2d/` is the original
+top-down version, preserved, still playable, with its own save. There is a link between them
+in the bottom corner of each.
 
 ## Run it
 
@@ -20,8 +25,8 @@ npm run dev
 
 | | |
 |---|---|
-| `WASD` | walk |
-| mouse | aim |
+| `WASD` | walk, relative to where you are looking |
+| mouse | look (click once to capture the pointer) |
 | left click | attack |
 | `Q` `E` `R` `F` | the four skills (also `1` `2` `3` `4`) |
 | `Space` | jump (airborne clears anything swinging at knee height) |
@@ -47,6 +52,29 @@ npm run dev
    the ground, magnetise toward you, and land in your pack if there is room.
 5. **Back to town** — sell, enhance, work the homestead, turn the contract in.
 6. **Die** — and generation +1 begins.
+
+## How the 3D conversion works
+
+The renderer was replaced; the game was not. Everything in `game/` — the combat simulation,
+boss move lists, terrain elevation, drops, XP, inheritance, the village — is unchanged, and
+so is every DOM panel. The simulation always described the world as an x/y ground plane plus
+a height, so the bridge to three.js is one mapping: sim `(x, y, z)` becomes world
+`(x, z, y)` at 1/20 scale. Nothing under `game/` knows that 3D exists.
+
+Both builds in this repo therefore run the *same* simulation, drawn two different ways,
+which is most of why keeping the top-down version costs nearly nothing.
+
+What genuinely changed by going first person:
+
+- **You aim with your face.** Things flank you unseen. Floor telegraphs still read, but only
+  the ones in front of you.
+- **Melee is harder to sell** than a top-down arc. There is a weapon in view that swings and
+  a crosshair that brightens off cooldown, but this needs more work than the 2D version did.
+- **Verticality got much better.** Jumping onto a ledge is legible now in a way the top-down
+  build never managed.
+- **You cannot see your own gear.** The paper doll moved to your hands — the weapon and
+  shield you equipped are the ones held in front of the camera — and the kit screen still
+  shows the whole character.
 
 ## The town
 
@@ -178,7 +206,7 @@ src/
     zone.ts        combat sim: mobs, nodes, drops, dash, hitstop, particles
     town.ts        village sim + render
   render/
-    view.ts        top-down projection + camera (swap this to change perspective)
+    view.ts        the old top-down projection, still used by the 2D build
     draw.ts        entity drawing, the paper doll, and the VN portraits
     look.ts        maps equipped items to what the paper doll draws
   ui/
@@ -203,9 +231,10 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
 
 ## Known rough edges
 
-- Art is all canvas primitives. No sprites yet, but gear changes the character, so the
-  paper-doll layering is in place for when sprites land.
-- No collision with buildings, trees or rocks — you walk through everything.
+- Every mesh is code-built primitives. No models, no textures beyond a generated ground map.
+- No collision against trees or rocks in the field. Town buildings and walls are solid.
+- Melee feedback in first person is the weakest part: it wants a camera kick on impact and
+  a sound before it really lands.
 - No sound at all. This is the biggest missing multiplier on how the hits feel.
 - Ordinary monster AI is chase, shoot, or leap. Bosses pick from a move list. No packs yet.
 - No co-op. See below.
@@ -217,9 +246,10 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
 
 ## Hosting
 
-Pushed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`. The build
-is ~180 KB of JS, 61 KB gzipped, no backend, saves in `localStorage` — so anyone with the
-link plays their own instance immediately.
+Pushed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`, as two
+pages out of one Vite build: `/` for the 3D game (677 KB, 189 KB gzipped, mostly three.js)
+and `/2d/` for the original (178 KB, 61 KB gzipped). No backend; the two saves use separate
+`localStorage` keys so the builds never tread on each other.
 
 ## On co-op
 
@@ -238,7 +268,8 @@ Not built, and not something to bolt on quickly. The honest shape of it:
 
 ## Next up (rough order)
 
-1. Sound — hits, footsteps, level-ups, a town theme and a field theme.
+1. Sound — hits, footsteps, level-ups, a town theme and a field theme. First person needs it
+   more than top-down did: it is most of what tells you something is behind you.
 2. Co-op over WebRTC, if the hosted build gets people playing.
 2. Collision in the field too — town is solid, zones are not yet.
 3. Class abilities on a hotbar so warrior and wizard actually play differently.
