@@ -29,8 +29,7 @@ html, body {
 }
 
 #app { position: relative; width: 100vw; height: 100vh; }
-#stage { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
-#over2d { display: block; position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+#stage { display: block; width: 100%; height: 100%; image-rendering: auto; }
 
 #overlay, #hud, #toasts, #drag-layer {
   position: absolute; inset: 0; pointer-events: none;

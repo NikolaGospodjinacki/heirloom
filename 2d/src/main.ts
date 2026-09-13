@@ -1,12 +1,15 @@
 import './style.css';
 
-import { EYE, SCALE, clearGroup, makeStage, trackSun } from './render3/core';
-import { FirstPerson } from './render3/fp';
-import { Overlay } from './render3/overlay';
-import { ZoneView } from './render3/zoneView';
-import { TownView } from './render3/townView';
-import { gearLook3, handLook } from './render3/look3';
-import { Town, buildTown, nearestInteract, tickTown } from './game/town';
+import { applyCamera, clampCamera, screenToWorldPoint, Camera, TS } from './render/view';
+import {
+  drawBackdrop, drawBorder, drawBossBar, drawChasm, drawCritter, drawDashTrail, drawDrop,
+  drawExitPad, drawFlora, drawGround, drawHero, drawMob, drawMote, drawNode, drawParticle,
+  drawPlateau, drawPopup, drawProjectile, drawSlash, drawTelegraph,
+} from './render/draw';
+import { gearLook, swingPiece } from './render/look';
+import {
+  Town, buildTown, drawTown, drawTownAmbience, nearestInteract, tickTown,
+} from './game/town';
 import { Zone, bossMob, buildZone, castAbility, tickZone, tryDash, tryJump } from './game/zone';
 import { MONSTERS } from './game/content';
 import type { AbilityKey } from './game/abilities';
@@ -26,16 +29,16 @@ import { TRAITS } from './game/bloodline';
 import { TECHNIQUES } from './game/techniques';
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
-const overlayCanvas = document.getElementById('over2d') as HTMLCanvasElement;
-const stage = makeStage(canvas);
-const fp = new FirstPerson(stage, canvas);
-const over = new Overlay(overlayCanvas);
+const ctx = canvas.getContext('2d')!;
+let W = 0, H = 0, DPR = 1;
 
-let W = 0, H = 0;
 function resize(): void {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
   W = window.innerWidth; H = window.innerHeight;
-  stage.resize(W, H);
-  over.resize(W, H);
+  canvas.width = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
 }
 resize();
 window.addEventListener('resize', resize);
@@ -45,80 +48,66 @@ window.addEventListener('resize', resize);
 let st: GameState | null = null;
 let town: Town | null = null;
 let zone: Zone | null = null;
-let townView: TownView | null = null;
-let zoneView: ZoneView | null = null;
+const cam: Camera = { x: 0, y: 0, zoom: 1 };
 let walkT = 0;
-let shakeT = 0;
 
 const keys = new Set<string>();
+let mouseX = 0, mouseY = 0;
 let mouseDown = false;
 
+/** Anything modal is open: panels or a conversation. */
 function uiBlocking(): boolean {
-  return panelOpen() || dialogueOpen() || (!!st && st.scene !== 'town' && st.scene !== 'zone');
-}
-
-/** Panels want the cursor; the world wants it locked. */
-function syncPointer(): void {
-  if (uiBlocking()) fp.release();
+  return panelOpen() || dialogueOpen();
 }
 
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   const k = e.key.toLowerCase();
   keys.add(k);
-  if (dialogueOpen()) return;
+  if (dialogueOpen()) return;           // the dialogue owns its own keys
   const inZone = st && st.scene === 'zone' && zone && !uiBlocking();
+  // Abilities live on Q E R F because W A S D are the feet. 1-4 work as well.
   const NUM_TO_KEY: Record<string, AbilityKey> = { '1': 'q', '2': 'f', '3': 'e', '4': 'r' };
-  const abilKey = NUM_TO_KEY[k]
-    ?? (k === 'q' || k === 'e' || k === 'r' || k === 'f' ? k as AbilityKey : null);
+  const abilKey = NUM_TO_KEY[k] ?? (k === 'q' || k === 'e' || k === 'r' || k === 'f' ? k as AbilityKey : null);
   if (inZone && abilKey) {
-    const [ax, ay] = fp.aimPoint();
-    castAbility(zone!, st!, abilKey, ax, ay);
+    const [wx, wy] = screenToWorldPoint(cam, W, H, mouseX, mouseY);
+    castAbility(zone!, st!, abilKey, wx, wy);
     return;
   }
   if (k === 'tab') { e.preventDefault(); toggle('bag'); }
   else if (k === 'c') { if (!inZone) toggle('char'); }
   else if (k === 'k') { if (!inZone) toggle('tech'); }
-  else if (k === 'escape') {
-    if (panelOpen()) { cancelDrag(); closePanel(); }
-  } else if (k === 'e') { interact(); }
+  else if (k === 'escape') { if (panelOpen()) { cancelDrag(); closePanel(); } }
+  else if (k === 'e') { interact(); }
   else if (k === 'x') { interact(); }
   else if (k === 'm') { if (st && st.scene === 'town') toggle('gate'); }
   else if (k === ' ') {
     e.preventDefault();
-    if (inZone) tryJump(zone!, st!);
+    if (st && st.scene === 'zone' && zone && !uiBlocking()) tryJump(zone, st);
   } else if (k === 'shift') {
-    if (inZone) {
-      const [mx, my] = moveInput();
-      tryDash(zone!, st!, mx, my);
+    if (st && st.scene === 'zone' && zone && !uiBlocking()) {
+      const [mx, my] = moveVector();
+      tryDash(zone, st, mx, my);
     }
   }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur', () => { keys.clear(); mouseDown = false; });
+document.addEventListener('mouseleave', () => { mouseDown = false; });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { mouseDown = false; keys.clear(); }
 });
 
+canvas.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 canvas.addEventListener('mousedown', (e) => {
-  if (uiBlocking()) return;
   if (e.button === 0) mouseDown = true;
-  if (e.button === 2 && st && st.scene === 'zone' && zone) {
-    const [mx, my] = moveInput();
+  if (e.button === 2 && st && st.scene === 'zone' && zone && !uiBlocking()) {
+    const [mx, my] = moveVector();
     tryDash(zone, st, mx, my);
   }
 });
 window.addEventListener('mouseup', () => { mouseDown = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-function moveInput(): [number, number] {
-  let fwd = 0, strafe = 0;
-  if (keys.has('w') || keys.has('arrowup')) fwd += 1;
-  if (keys.has('s') || keys.has('arrowdown')) fwd -= 1;
-  if (keys.has('d') || keys.has('arrowright')) strafe += 1;
-  if (keys.has('a') || keys.has('arrowleft')) strafe -= 1;
-  return fp.moveVector(fwd, strafe);
-}
 
 function uiCtx(): UICtx {
   return {
@@ -134,14 +123,13 @@ function toggle(kind: 'bag' | 'char' | 'tech' | 'gate'): void {
   if (!st || st.scene === 'creation' || st.scene === 'death') return;
   if (dialogueOpen()) return;
   if (panelOpen()) { cancelDrag(); closePanel(); return; }
-  fp.release();
   openPanel(kind, uiCtx());
 }
 
 // --------------------------------------------------------------- buildings
 
 function interact(): void {
-  if (!st || panelOpen() || dialogueOpen()) return;
+  if (!st || uiBlocking()) return;
   if (st.scene === 'zone' && zone) {
     if (zone.nearExit) returnToTown();
     return;
@@ -149,7 +137,6 @@ function interact(): void {
   if (st.scene !== 'town' || !town) return;
   const hit = nearestInteract(town);
   if (!hit) return;
-  fp.release();
   const c = uiCtx();
   const leave = () => { closeDialogue(); };
 
@@ -157,6 +144,7 @@ function interact(): void {
     openDialogue(townsfolkTalk(hit.n, st, leave));
     return;
   }
+
   const b = hit.b;
   switch (b.id) {
     case 'guild':
@@ -211,54 +199,32 @@ function openInn(): void {
 
 // ----------------------------------------------------------------- scenes
 
-function dropViews(): void {
-  zoneView?.dispose(); zoneView = null;
-  townView?.dispose(); townView = null;
-  clearGroup(stage.world);
-}
-
 function startRun(zoneId: string, boss?: string): void {
   if (!st) return;
-  dropViews();
   st.zoneId = zoneId;
   zone = buildZone(zoneId, st, boss);
   st.scene = 'zone';
-  zoneView = new ZoneView(stage, zone);
   pushLog(st, 'You set out for ' + zone.def.name + '.', 'info');
   save(st);
-  fp.requestLock();
 }
 
 function returnToTown(): void {
   if (!st) return;
-  dropViews();
   st.scene = 'town';
   zone = null;
   town = buildTown(st);
   town.px = town.gateX;
-  town.py = town.gateY + 150;
-  fp.yaw = -Math.PI / 2;
-  fp.pitch = 0;
-  townView = new TownView(stage, town, st);
+  town.py = town.gateY + 84;
   restockShop(st);
   save(st);
-}
-
-function enterTown(): void {
-  if (!st) return;
-  dropViews();
-  st.scene = 'town';
-  zone = null;
-  town = buildTown(st);
-  townView = new TownView(stage, town, st);
 }
 
 function onDeath(cause: string): void {
   if (!st) return;
   st.scene = 'death';
+  zone = null;
   pushLog(st, st.hero.name + ' was killed by ' + cause + '.', 'bad');
   save(st);
-  fp.release();
   showDeath(cause);
 }
 
@@ -272,8 +238,8 @@ function showCreation(): void {
   box.append(
     el('h1', {}, 'HEIRLOOM'),
     el('p', { class: 'lead' },
-      'A life is short and mostly unlucky. A bloodline is long. '
-      + 'Choose what the first of your name was good at.'),
+      'A life is short and mostly unlucky. A bloodline is long. ' +
+      'Choose what the first of your name was good at.'),
   );
   const cards = el('div', { class: 'classcards' });
   const mk = (id: 'warrior' | 'wizard', name: string, desc: string, bits: string) => {
@@ -281,9 +247,9 @@ function showCreation(): void {
     c.append(el('h3', {}, name), el('p', {}, desc), el('div', { class: 'muted' }, bits));
     c.addEventListener('click', () => {
       st = newGame(id);
+      town = buildTown(st);
       resetHud();
       clear(overlay);
-      enterTown();
       save(st);
       toast('The ' + st.hero.name.split(' ').pop() + ' line begins');
     });
@@ -299,11 +265,13 @@ function showCreation(): void {
   );
   box.append(cards);
   box.append(el('div', { class: 'muted', style: 'margin-top:20px' },
-    'Every heir is rolled fresh: attributes, looks, and one trait out of ' + TRAITS.length + '. '
-    + 'Movement techniques (' + TECHNIQUES.length + ' of them) are learned once and never forgotten.'));
+    'Every heir is rolled fresh: attributes, looks, and one trait out of ' + TRAITS.length + '. ' +
+    'Movement techniques (' + TECHNIQUES.length + ' of them) are learned once and never forgotten.'));
+
   const wipeBtn = el('button', { class: 'btn small danger' }, 'Erase saved bloodline');
   wipeBtn.addEventListener('click', () => { wipe(); toast('Save erased'); });
   box.append(el('div', { style: 'margin-top:14px' }, wipeBtn));
+
   scrim.append(box);
   overlay.append(scrim);
 }
@@ -320,10 +288,11 @@ function showDeath(cause: string): void {
   box.append(
     el('h1', {}, 'YOU DIED'),
     el('p', { class: 'epitaph' },
-      s.hero.name + ', generation ' + s.generation + ', killed by ' + cause + '. '
-      + s.lifetime.kills + ' kills, ' + s.lifetime.questsDone + ' contracts, '
-      + Math.round((Date.now() - s.lifetime.born) / 60000) + ' minutes of life.'),
+      s.hero.name + ', generation ' + s.generation + ', killed by ' + cause + '. ' +
+      s.lifetime.kills + ' kills, ' + s.lifetime.questsDone + ' contracts, ' +
+      Math.round((Date.now() - s.lifetime.born) / 60000) + ' minutes of life.'),
   );
+
   const keep = el('div', { class: 'heirbox' });
   keep.append(el('h3', { style: 'margin:0 0 10px' }, 'What survives you'));
   const line = (t: string, cls = 'muted') => keep.append(el('div', { class: cls }, '▸ ' + t));
@@ -336,14 +305,16 @@ function showDeath(cause: string): void {
   line('Your pack and everything you were wearing is buried with you.', 'warn');
   if (s.donated > 0) line(s.village.name + ' remembers the ' + s.donated + 'g you gave.');
   box.append(keep);
+
   const b = el('button', {
-    class: 'btn primary', style: 'margin-top:22px;padding:12px 26px;font-size:14px',
+    class: 'btn primary',
+    style: 'margin-top:22px;padding:12px 26px;font-size:14px',
   }, 'Years pass…');
   b.addEventListener('click', () => {
     die(s, cause);
+    town = buildTown(s);
     resetHud();
     clear(overlay);
-    enterTown();
     save(s);
     showHeirIntro();
   });
@@ -362,8 +333,8 @@ function showHeirIntro(): void {
   box.append(
     el('h1', { style: 'font-size:30px' }, s.hero.name),
     el('p', { class: 'lead' },
-      'Generation ' + s.generation + ' of the line, in ' + s.village.name
-      + ' — a ' + s.village.preset + ' village these days.'),
+      'Generation ' + s.generation + ' of the line, in ' + s.village.name +
+      ' — a ' + s.village.preset + ' village these days.'),
   );
   const grid = el('div', { class: 'heirbox' });
   const row = (k: string, v: string) => el('div', { class: 'srow' }, el('span', {}, k), el('b', {}, v));
@@ -379,6 +350,7 @@ function showHeirIntro(): void {
     el('div', { class: 'muted' }, s.hero.trait.desc),
     el('div', { class: 'sep' }),
     row('Max health', String(d.maxHp)),
+    row('Inherited skill', Object.keys(s.legacy.legacy).length + ' disciplines'),
     row('Memory to spend', String(s.memory)),
   );
   box.append(grid);
@@ -392,98 +364,195 @@ function showHeirIntro(): void {
 
 // ------------------------------------------------------------------- loop
 
+function moveVector(): [number, number] {
+  let ix = 0, iy = 0;
+  if (keys.has('w') || keys.has('arrowup')) iy -= 1;
+  if (keys.has('s') || keys.has('arrowdown')) iy += 1;
+  if (keys.has('a') || keys.has('arrowleft')) ix -= 1;
+  if (keys.has('d') || keys.has('arrowright')) ix += 1;
+  if (ix === 0 && iy === 0) return [0, 0];
+  const l = Math.hypot(ix, iy);
+  return [ix / l, iy / l];
+}
+
 let last = performance.now();
 
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  requestAnimationFrame(frame);
 
-  if (!st) { over.begin(); stage.renderer.render(stage.scene, stage.camera); return; }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.scale(DPR, DPR);
+
+  if (!st) {
+    paintBackdrop();
+    requestAnimationFrame(frame);
+    return;
+  }
 
   tickHomestead(st, dt);
   st.lastRealTick = Date.now();
-  syncPointer();
 
-  const blocked = uiBlocking();
-  const d = derived(st);
-  over.begin();
-
-  if (st.scene === 'town' && town && townView) {
-    const [mx, my] = blocked ? [0, 0] : moveInput();
+  if (st.scene === 'town' && town) {
+    const blocked = uiBlocking();
+    const [mx, my] = blocked ? [0, 0] : moveVector();
     if (mx || my) walkT += dt;
     town.walkT = walkT;
-    tickTown(town, dt, mx, my, d.speed * 0.9);
-    town.facing = fp.facing();
+    const d = derived(st);
+    tickTown(town, dt, mx, my, d.speed * 0.85);
 
-    fp.place(town.px, town.py, 0);
-    fp.update(dt, !!(mx || my), 0, 0);
-    fp.setGear(gearLook3(st.equipped));
-    trackSun(stage, town.px, town.py);
-    townView.sync(st, now);
-
-    const near = blocked ? null : nearestInteract(town);
-    over.townLabels(stage.camera, town, near);
-    if (!blocked) over.crosshair(!!near, 0);
-    if (!fp.locked && !blocked) over.hint('click to look around  ·  WASD to walk  ·  E to enter');
-
+    cam.zoom = targetZoom();
+    cam.x = town.px; cam.y = town.py;
+    clampCamera(cam, town.w * TS, town.h * TS, W, H);
+    ctx.save();
+    applyCamera(ctx, cam, W, H);
+    drawTown(ctx, town, st, blocked ? null : nearestInteract(town));
+    ctx.restore();
+    drawTownAmbience(ctx, W, H);
     drawHud(st, 'town', null);
-    st.hp = Math.min(d.maxHp, st.hp + dt * d.hpRegen * 2);
+
+    st.hp = Math.min(d.maxHp, st.hp + dt * (d.hpRegen * 2));
     st.mana = Math.min(d.maxMana, st.mana + dt * 4);
     st.stamina = Math.min(d.maxStamina, st.stamina + dt * d.staminaRegen * 2);
-  } else if (st.scene === 'zone' && zone && zoneView) {
-    const [mx, my] = blocked ? [0, 0] : moveInput();
+  } else if (st.scene === 'zone' && zone) {
+    const blocked = uiBlocking();
+    const [mx, my] = blocked ? [0, 0] : moveVector();
     if (mx || my) walkT += dt;
-    zone.facing = fp.facing();
-    const attack = !blocked && mouseDown && fp.locked;
-    const swingBefore = zone.swingT;
 
-    tickZone(zone, st, dt, { mx, my, attack }, { onDeath, onExit: returnToTown });
+    if (!blocked) {
+      const [wx, wy] = screenToWorldPoint(cam, W, H, mouseX, mouseY);
+      const dx = wx - zone.px, dy = wy - zone.py;
+      if (Math.hypot(dx, dy) > 6) zone.facing = Math.atan2(dy, dx);
+    }
 
-    if (st.scene === 'zone' && zone && zoneView) {
-      if (zone.swingT > swingBefore) fp.startSwing(0.24);
-      shakeT = zone.shake;
-      const shakeX = shakeT > 0.2 ? (Math.random() - 0.5) * shakeT * 0.004 : 0;
-      const shakeY = shakeT > 0.2 ? (Math.random() - 0.5) * shakeT * 0.004 : 0;
+    const attack = !blocked && mouseDown;
+    tickZone(zone, st, dt, { mx, my, attack }, {
+      onDeath,
+      onExit: returnToTown,
+    });
 
-      fp.place(zone.px, zone.py, zone.groundZ + zone.jumpZ);
-      stage.camera.position.x += shakeX;
-      stage.camera.position.y += shakeY;
-      fp.update(dt, !!(mx || my), zone.hurtT, zone.jumpZ);
-      fp.setGear(handLook(gearLook3(st.equipped), nearHarvest(zone)));
-      trackSun(stage, zone.px, zone.py);
-      zoneView.sync(now);
+    if (st.scene === 'zone' && zone) {
+      cam.zoom = targetZoom();
+      cam.x += (zone.px - cam.x) * Math.min(1, dt * 8);
+      cam.y += (zone.py - cam.y) * Math.min(1, dt * 8);
+      clampCamera(cam, zone.def.w * TS, zone.def.h * TS, W, H, 300);
 
-      over.popups(stage.camera, zone);
-      over.mobBars(stage.camera, zone, (id) => MONSTERS[id].size, zone.bossUid);
-      if (!blocked) {
-        over.crosshair(zone.atkCd <= 0.02, zone.castMax > 0 && zone.castT > 0
-          ? 1 - zone.castT / zone.castMax : 0);
+      const shake = zone.shake;
+      ctx.save();
+      applyCamera(ctx, cam, W, H);
+      if (shake > 0.2) {
+        ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
       }
-      if (zone.nearExit) over.hint('[X] the road home');
-      if (!fp.locked && !blocked) over.hint('click to look around');
+      renderZone(zone, st);
+      ctx.restore();
+      drawHud(st, 'zone', zone);
 
       const boss = bossMob(zone);
       if (boss) {
         const bd = MONSTERS[boss.defId];
-        over.bossBar(bd.name, bd.title ?? '', boss.hp / boss.maxHp);
+        drawBossBar(ctx, W, bd.name, bd.title ?? '', boss.hp / boss.maxHp);
       }
-      over.flash('#b4281e', zone.hurtT * 0.75);
-      over.flash('#fff0c8', zone.killGlow * 0.22);
-      over.lowHealth(Math.max(0, 1 - (st.hp / d.maxHp) / 0.3) * 0.9);
-      drawHud(st, 'zone', zone);
+
+      if (zone.killGlow > 0) {
+        ctx.fillStyle = 'rgba(255,240,200,' + zone.killGlow * 0.22 + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+      if (zone.hurtT > 0) {
+        ctx.fillStyle = 'rgba(180,40,30,' + zone.hurtT * 0.9 + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+      if (st.hp / derived(st).maxHp < 0.28) {
+        const pulse = 0.10 + 0.07 * Math.sin(now * 0.005);
+        ctx.fillStyle = 'rgba(150,20,20,' + pulse + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
     }
+  } else {
+    paintBackdrop();
   }
 
-  stage.renderer.render(stage.scene, stage.camera);
+  requestAnimationFrame(frame);
 }
 
+/** Chunky JRPG scale, but never so tight that a wolf can charge in unseen. */
+function targetZoom(): number {
+  return Math.max(1.3, Math.min(1.95, Math.min(W, H) / 560));
+}
+
+function renderZone(z: Zone, s: GameState): void {
+  drawBackdrop(ctx, z.def.w * TS, z.def.backdrop, cam.x, z.def.skyTop, z.def.skyBottom);
+  drawGround(ctx, z.def.w, z.def.h, z.tiles, z.def.ground, z.def.ground2, 0);
+  for (const c of z.chasms) drawChasm(ctx, c);
+  // low ground first so tall ground overlaps it correctly
+  const tiers = [...z.plateaus].sort((a, b) => a.z - b.z);
+  for (const p of tiers) drawPlateau(ctx, p, z.def.ground2, z.def.ground);
+  drawBorder(ctx, z.def.w, z.def.h);
+  drawExitPad(ctx, z);
+  for (const tg of z.telegraphs) drawTelegraph(ctx, tg);
+  drawDashTrail(ctx, z.dashTrail, s.hero.appearance);
+
+  type R = { d: number; f: () => void };
+  const list: R[] = [];
+  for (const f of z.flora) list.push({ d: f.y - f.gz, f: () => drawFlora(ctx, f, z.time) });
+  for (const n of z.nodes) list.push({ d: n.y - n.gz, f: () => drawNode(ctx, n) });
+  for (const m of z.mobs) list.push({ d: m.y - m.gz, f: () => drawMob(ctx, m) });
+  for (const dr of z.drops) list.push({ d: dr.y - dr.gz, f: () => drawDrop(ctx, dr) });
+  for (const c of z.critters) list.push({ d: c.y, f: () => drawCritter(ctx, c, z.time) });
+  const heroZ = z.groundZ + z.jumpZ;
+  list.push({
+    d: z.py - z.groundZ,
+    f: () => {
+      const harvesting = z.swingT > 0 && nearHarvest(z);
+      drawHero(ctx, z.px, z.py, s.hero.appearance, z.facing, walkT, {
+        hurt: z.hurtT, swing: z.swingT, swingMax: harvesting ? 0.22 : 0.2,
+        gear: swingPiece(gearLook(s.equipped), harvesting),
+        iframes: z.iframes,
+        z: heroZ,
+        cast: z.castMax > 0 && z.castT > 0 ? 1 - z.castT / z.castMax : 0,
+        shield: z.shield > 0,
+        spin: z.spinT > 0,
+      });
+    },
+  });
+  list.sort((a, b) => a.d - b.d);
+  for (const r of list) r.f();
+
+  for (const sl of z.slashes) drawSlash(ctx, sl);
+  for (const p of z.projectiles) drawProjectile(ctx, p);
+  for (const p of z.particles) drawParticle(ctx, p);
+  for (const mo of z.motes) drawMote(ctx, mo, z.def.ambienceColor, z.time);
+  for (const p of z.popups) drawPopup(ctx, p);
+}
+
+/** True when the swing currently playing is a harvest rather than an attack. */
 function nearHarvest(z: Zone): boolean {
   for (const n of z.nodes) {
     if (n.respawn > 0) continue;
     if (Math.hypot(n.x - z.px, n.y - z.py) < 56) return true;
   }
   return false;
+}
+
+function paintBackdrop(): void {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#241d18');
+  g.addColorStop(1, '#12100e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  const t = performance.now() * 0.0002;
+  ctx.save();
+  ctx.globalAlpha = 0.09;
+  for (let i = 0; i < 26; i++) {
+    const a = t + i;
+    const x = (Math.sin(a * 1.7 + i) * 0.5 + 0.5) * W;
+    const y = (Math.cos(a * 1.3 + i * 2) * 0.5 + 0.5) * H;
+    ctx.fillStyle = '#e0b64f';
+    ctx.beginPath();
+    ctx.arc(x, y, 40 + i, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 // ------------------------------------------------------------------- boot
@@ -500,12 +569,12 @@ function boot(): void {
         .map(([k, v]) => [k, Math.round(v - (before[k] ?? 0))] as [string, number])
         .filter(([, v]) => v > 0);
       if (gained.length) {
-        toast('While you were away your hands brought in '
-          + gained.map(([k, v]) => v + ' ' + k).join(', '), 4200);
+        toast('While you were away your hands brought in ' +
+          gained.map(([k, v]) => v + ' ' + k).join(', '), 4200);
       }
     }
-    if (st.scene === 'death') { enterTown(); showDeath('unknown causes'); }
-    else enterTown();
+    if (st.scene === 'death') showDeath('unknown causes');
+    else { st.scene = 'town'; town = buildTown(st); }
   } else {
     showCreation();
   }
@@ -519,8 +588,7 @@ boot();
   get state() { return st; },
   get town() { return town; },
   get zone() { return zone; },
-  keys, stage, fp,
+  keys,
   wipe: () => { wipe(); location.reload(); },
   refreshPanel,
-  eye: EYE, scale: SCALE,
 };
