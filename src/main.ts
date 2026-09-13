@@ -103,10 +103,7 @@ document.addEventListener('visibilitychange', () => {
 canvas.addEventListener('mousedown', (e) => {
   if (uiBlocking()) return;
   if (e.button === 0) mouseDown = true;
-  if (e.button === 2 && st && st.scene === 'zone' && zone) {
-    const [mx, my] = moveInput();
-    tryDash(zone, st, mx, my);
-  }
+  // right mouse belongs to the camera now; dash lives on Shift
 });
 window.addEventListener('mouseup', () => { mouseDown = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -425,7 +422,10 @@ function frame(now: number): void {
     const near = blocked ? null : nearestInteract(town);
     over.townLabels(stage.camera, town, near);
     if (!blocked) over.crosshair(!!near, 0);
-    if (!fp.locked && !blocked) over.hint('click to look around  ·  WASD to walk  ·  E to enter');
+    fp.allowLeftDrag = true;
+    if (!fp.locked && !fp.dragging && !blocked) {
+      over.hint('hold a mouse button and drag to look  ·  WASD to walk  ·  E to enter');
+    }
 
     drawHud(st, 'town', null);
     st.hp = Math.min(d.maxHp, st.hp + dt * d.hpRegen * 2);
@@ -461,7 +461,10 @@ function frame(now: number): void {
           ? 1 - zone.castT / zone.castMax : 0);
       }
       if (zone.nearExit) over.hint('[X] the road home');
-      if (!fp.locked && !blocked) over.hint('click to look around');
+      fp.allowLeftDrag = false;
+      if (!fp.locked && !fp.dragging && !blocked && zone.time < 6) {
+        over.hint('hold right mouse and drag to look  ·  left click attacks');
+      }
 
       const boss = bossMob(zone);
       if (boss) {

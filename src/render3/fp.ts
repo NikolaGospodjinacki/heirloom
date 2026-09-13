@@ -13,6 +13,12 @@ export class FirstPerson {
   pitch = 0;
   sens = 0.0022;
   locked = false;
+  /** pointer lock was refused (embedded browsers usually refuse it) */
+  lockFailed = false;
+  /** a mouse button is held and the camera follows the drag */
+  dragging = false;
+  /** town has no attack, so a left-drag can look around there too */
+  allowLeftDrag = true;
   bob = 0;
   private stage: Stage;
   private canvas: HTMLCanvasElement;
@@ -31,22 +37,48 @@ export class FirstPerson {
     this.weaponSlot.position.set(0.42, -0.36, -0.62);
     this.offSlot.position.set(-0.44, -0.34, -0.6);
 
-    canvas.addEventListener('mousedown', () => this.requestLock());
+    // Hold right mouse to look, like an old MMO. This works in every browser,
+    // including embedded ones that refuse pointer lock outright.
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2 || (e.button === 0 && this.allowLeftDrag)) this.dragging = true;
+      if (e.button === 0) this.requestLock();
+    });
+    window.addEventListener('mouseup', () => { this.dragging = false; });
+    window.addEventListener('blur', () => { this.dragging = false; });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
     });
+    document.addEventListener('pointerlockerror', () => { this.lockFailed = true; });
     document.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
-      this.yaw -= e.movementX * this.sens;
-      this.pitch -= e.movementY * this.sens;
+      if (!this.locked && !this.dragging) return;
+      const dx = e.movementX ?? 0;
+      const dy = e.movementY ?? 0;
+      // unlocked drags report bigger jumps on some platforms; clamp the spikes
+      const cap = this.locked ? 400 : 120;
+      this.yaw -= Math.max(-cap, Math.min(cap, dx)) * this.sens;
+      this.pitch -= Math.max(-cap, Math.min(cap, dy)) * this.sens;
       const lim = Math.PI / 2 - 0.05;
       this.pitch = Math.max(-lim, Math.min(lim, this.pitch));
     });
   }
 
   requestLock(): void {
-    if (this.locked) return;
-    this.canvas.requestPointerLock?.();
+    if (this.locked || this.lockFailed) return;
+    try {
+      const req = this.canvas.requestPointerLock as unknown as (() => Promise<void> | void) | undefined;
+      const p = req?.call(this.canvas);
+      if (p && typeof (p as Promise<void>).catch === 'function') {
+        (p as Promise<void>).catch(() => { this.lockFailed = true; });
+      }
+    } catch {
+      this.lockFailed = true;
+    }
+  }
+
+  /** Is the camera currently steerable by the mouse at all? */
+  get looking(): boolean {
+    return this.locked || this.dragging;
   }
   release(): void {
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
