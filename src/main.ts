@@ -1,11 +1,15 @@
 import './style.css';
 
-import { EYE, SCALE, clearGroup, makeStage, trackSun } from './render3/core';
-import { FirstPerson } from './render3/fp';
+import { clearGroup, makeStage, trackSun } from './render3/core';
+import { Diorama } from './render3/diorama';
+import { Sprite } from './render3/sprite';
+import { makePost, setMood } from './render3/post';
 import { Overlay } from './render3/overlay';
-import { ZoneView } from './render3/zoneView';
+import { ZoneView, zoneMood } from './render3/zoneView';
 import { TownView } from './render3/townView';
-import { gearLook3, handLook } from './render3/look3';
+import { drawHero, setSpriteMode } from './render/draw';
+import { setBlobShadows } from './render/view';
+import { gearLook, swingPiece } from './render/look';
 import { Town, buildTown, nearestInteract, tickTown } from './game/town';
 import { Zone, bossMob, buildZone, castAbility, tickZone, tryDash, tryJump } from './game/zone';
 import { MONSTERS } from './game/content';
@@ -25,20 +29,31 @@ import { cancelDrag } from './ui/grid';
 import { TRAITS } from './game/bloodline';
 import { TECHNIQUES } from './game/techniques';
 
+// The 2D art paints standees here: no painted blob shadows, no ground rings.
+setSpriteMode(true);
+setBlobShadows(false);
+
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 const overlayCanvas = document.getElementById('over2d') as HTMLCanvasElement;
 const stage = makeStage(canvas);
-const fp = new FirstPerson(stage, canvas);
+const diorama = new Diorama(stage, canvas);
+const post = makePost(stage);
 const over = new Overlay(overlayCanvas);
 
 let W = 0, H = 0;
 function resize(): void {
-  W = window.innerWidth; H = window.innerHeight;
+  W = window.innerWidth;
+  H = window.innerHeight;
   stage.resize(W, H);
+  post.resize(W, H);
   over.resize(W, H);
 }
 resize();
 window.addEventListener('resize', resize);
+
+// The hero lives on the scene itself, so it survives every scene change.
+const hero = new Sprite(124, 128, { res: 3, footPad: 10 });
+stage.scene.add(hero.mesh);
 
 // ------------------------------------------------------------------ state
 
@@ -48,7 +63,7 @@ let zone: Zone | null = null;
 let townView: TownView | null = null;
 let zoneView: ZoneView | null = null;
 let walkT = 0;
-let shakeT = 0;
+let townFacing = -Math.PI / 2;
 
 const keys = new Set<string>();
 let mouseDown = false;
@@ -57,32 +72,25 @@ function uiBlocking(): boolean {
   return panelOpen() || dialogueOpen() || (!!st && st.scene !== 'town' && st.scene !== 'zone');
 }
 
-/** Panels want the cursor; the world wants it locked. */
-function syncPointer(): void {
-  if (uiBlocking()) fp.release();
-}
-
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   const k = e.key.toLowerCase();
   keys.add(k);
   if (dialogueOpen()) return;
-  const inZone = st && st.scene === 'zone' && zone && !uiBlocking();
+  const inZone = !!(st && st.scene === 'zone' && zone && !uiBlocking());
   const NUM_TO_KEY: Record<string, AbilityKey> = { '1': 'q', '2': 'f', '3': 'e', '4': 'r' };
   const abilKey = NUM_TO_KEY[k]
     ?? (k === 'q' || k === 'e' || k === 'r' || k === 'f' ? k as AbilityKey : null);
   if (inZone && abilKey) {
-    const [ax, ay] = fp.aimPoint();
+    const [ax, ay] = aimGround();
     castAbility(zone!, st!, abilKey, ax, ay);
     return;
   }
   if (k === 'tab') { e.preventDefault(); toggle('bag'); }
   else if (k === 'c') { if (!inZone) toggle('char'); }
   else if (k === 'k') { if (!inZone) toggle('tech'); }
-  else if (k === 'escape') {
-    if (panelOpen()) { cancelDrag(); closePanel(); }
-  } else if (k === 'e') { interact(); }
-  else if (k === 'x') { interact(); }
+  else if (k === 'escape') { if (panelOpen()) { cancelDrag(); closePanel(); } }
+  else if (k === 'e' || k === 'x') { interact(); }
   else if (k === 'm') { if (st && st.scene === 'town') toggle('gate'); }
   else if (k === ' ') {
     e.preventDefault();
@@ -103,18 +111,29 @@ document.addEventListener('visibilitychange', () => {
 canvas.addEventListener('mousedown', (e) => {
   if (uiBlocking()) return;
   if (e.button === 0) mouseDown = true;
-  // right mouse belongs to the camera now; dash lives on Shift
+  if (e.button === 2 && st && st.scene === 'zone' && zone) {
+    const [mx, my] = moveInput();
+    tryDash(zone, st, mx, my);
+  }
 });
 window.addEventListener('mouseup', () => { mouseDown = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+/** WASD on the screen's own axes: the camera never turns, so north is always up. */
 function moveInput(): [number, number] {
-  let fwd = 0, strafe = 0;
-  if (keys.has('w') || keys.has('arrowup')) fwd += 1;
-  if (keys.has('s') || keys.has('arrowdown')) fwd -= 1;
-  if (keys.has('d') || keys.has('arrowright')) strafe += 1;
-  if (keys.has('a') || keys.has('arrowleft')) strafe -= 1;
-  return fp.moveVector(fwd, strafe);
+  let ix = 0, iy = 0;
+  if (keys.has('w') || keys.has('arrowup')) iy -= 1;
+  if (keys.has('s') || keys.has('arrowdown')) iy += 1;
+  if (keys.has('a') || keys.has('arrowleft')) ix -= 1;
+  if (keys.has('d') || keys.has('arrowright')) ix += 1;
+  if (!ix && !iy) return [0, 0];
+  const l = Math.hypot(ix, iy);
+  return [ix / l, iy / l];
+}
+
+function aimGround(): [number, number] {
+  const h = st && st.scene === 'zone' && zone ? zone.groundZ : 0;
+  return diorama.aim(W, H, h);
 }
 
 function uiCtx(): UICtx {
@@ -131,7 +150,6 @@ function toggle(kind: 'bag' | 'char' | 'tech' | 'gate'): void {
   if (!st || st.scene === 'creation' || st.scene === 'death') return;
   if (dialogueOpen()) return;
   if (panelOpen()) { cancelDrag(); closePanel(); return; }
-  fp.release();
   openPanel(kind, uiCtx());
 }
 
@@ -146,7 +164,6 @@ function interact(): void {
   if (st.scene !== 'town' || !town) return;
   const hit = nearestInteract(town);
   if (!hit) return;
-  fp.release();
   const c = uiCtx();
   const leave = () => { closeDialogue(); };
 
@@ -212,6 +229,7 @@ function dropViews(): void {
   zoneView?.dispose(); zoneView = null;
   townView?.dispose(); townView = null;
   clearGroup(stage.world);
+  diorama.snap();
 }
 
 function startRun(zoneId: string, boss?: string): void {
@@ -221,9 +239,9 @@ function startRun(zoneId: string, boss?: string): void {
   zone = buildZone(zoneId, st, boss);
   st.scene = 'zone';
   zoneView = new ZoneView(stage, zone);
+  setMood(post, zoneMood(zone.def));
   pushLog(st, 'You set out for ' + zone.def.name + '.', 'info');
   save(st);
-  fp.requestLock();
 }
 
 function returnToTown(): void {
@@ -234,9 +252,9 @@ function returnToTown(): void {
   town = buildTown(st);
   town.px = town.gateX;
   town.py = town.gateY + 150;
-  fp.yaw = -Math.PI / 2;
-  fp.pitch = 0;
+  townFacing = -Math.PI / 2;
   townView = new TownView(stage, town, st);
+  setMood(post, 'town');
   restockShop(st);
   save(st);
 }
@@ -248,6 +266,7 @@ function enterTown(): void {
   zone = null;
   town = buildTown(st);
   townView = new TownView(stage, town, st);
+  setMood(post, 'town');
 }
 
 function onDeath(cause: string): void {
@@ -255,7 +274,6 @@ function onDeath(cause: string): void {
   st.scene = 'death';
   pushLog(st, st.hero.name + ' was killed by ' + cause + '.', 'bad');
   save(st);
-  fp.release();
   showDeath(cause);
 }
 
@@ -321,18 +339,18 @@ function showDeath(cause: string): void {
       + s.lifetime.kills + ' kills, ' + s.lifetime.questsDone + ' contracts, '
       + Math.round((Date.now() - s.lifetime.born) / 60000) + ' minutes of life.'),
   );
-  const keep = el('div', { class: 'heirbox' });
-  keep.append(el('h3', { style: 'margin:0 0 10px' }, 'What survives you'));
-  const line = (t: string, cls = 'muted') => keep.append(el('div', { class: cls }, '▸ ' + t));
+  const keepBox = el('div', { class: 'heirbox' });
+  keepBox.append(el('h3', { style: 'margin:0 0 10px' }, 'What survives you'));
+  const line = (t: string, cls = 'muted') => keepBox.append(el('div', { class: cls }, '▸ ' + t));
   line('A quarter of every skill, passed down as instinct.');
   line(mem + ' memory — your heir can spend it on techniques you learned the hard way.');
   line('Everything in the heirloom chest at home (' + s.chest.items.length + ' items).');
   line('The homestead: plots, hired hands and stores.');
   line('A quarter of your coin, ' + Math.round(s.gold * 0.25) + 'g, found under the floor.');
-  keep.append(el('div', { class: 'sep' }));
+  keepBox.append(el('div', { class: 'sep' }));
   line('Your pack and everything you were wearing is buried with you.', 'warn');
   if (s.donated > 0) line(s.village.name + ' remembers the ' + s.donated + 'g you gave.');
-  box.append(keep);
+  box.append(keepBox);
   const b = el('button', {
     class: 'btn primary', style: 'margin-top:22px;padding:12px 26px;font-size:14px',
   }, 'Years pass…');
@@ -389,104 +407,96 @@ function showHeirIntro(): void {
 
 // ------------------------------------------------------------------- loop
 
-let last = performance.now();
-
-function frame(now: number): void {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  requestAnimationFrame(frame);
-
-  if (!st) { over.begin(); stage.renderer.render(stage.scene, stage.camera); return; }
-
-  tickHomestead(st, dt);
-  st.lastRealTick = Date.now();
-  syncPointer();
-
-  const blocked = uiBlocking();
-  const d = derived(st);
-  over.begin();
-
-  if (st.scene === 'town' && town && townView) {
-    const [mx, my] = blocked ? [0, 0] : moveInput();
-    if (mx || my) walkT += dt;
-    town.walkT = walkT;
-    tickTown(town, dt, mx, my, d.speed * 0.9);
-    town.facing = fp.facing();
-
-    fp.place(town.px, town.py, 0);
-    fp.update(dt, !!(mx || my), 0, 0);
-    fp.setGear(gearLook3(st.equipped));
-    trackSun(stage, town.px, town.py);
-    townView.sync(st, now);
-
-    const near = blocked ? null : nearestInteract(town);
-    over.townLabels(stage.camera, town, near);
-    if (!blocked) over.crosshair(!!near, 0);
-    fp.allowLeftDrag = true;
-    if (!fp.locked && !fp.dragging && !blocked) {
-      over.hint('hold a mouse button and drag to look  ·  WASD to walk  ·  E to enter');
-    }
-
-    drawHud(st, 'town', null);
-    st.hp = Math.min(d.maxHp, st.hp + dt * d.hpRegen * 2);
-    st.mana = Math.min(d.maxMana, st.mana + dt * 4);
-    st.stamina = Math.min(d.maxStamina, st.stamina + dt * d.staminaRegen * 2);
-  } else if (st.scene === 'zone' && zone && zoneView) {
-    const [mx, my] = blocked ? [0, 0] : moveInput();
-    if (mx || my) walkT += dt;
-    zone.facing = fp.facing();
-    const attack = !blocked && mouseDown && fp.locked;
-    const swingBefore = zone.swingT;
-
-    tickZone(zone, st, dt, { mx, my, attack }, { onDeath, onExit: returnToTown });
-
-    if (st.scene === 'zone' && zone && zoneView) {
-      if (zone.swingT > swingBefore) fp.startSwing(0.24);
-      shakeT = zone.shake;
-      const shakeX = shakeT > 0.2 ? (Math.random() - 0.5) * shakeT * 0.004 : 0;
-      const shakeY = shakeT > 0.2 ? (Math.random() - 0.5) * shakeT * 0.004 : 0;
-
-      fp.place(zone.px, zone.py, zone.groundZ + zone.jumpZ);
-      stage.camera.position.x += shakeX;
-      stage.camera.position.y += shakeY;
-      fp.update(dt, !!(mx || my), zone.hurtT, zone.jumpZ);
-      fp.setGear(handLook(gearLook3(st.equipped), nearHarvest(zone)));
-      trackSun(stage, zone.px, zone.py);
-      zoneView.sync(now);
-
-      over.popups(stage.camera, zone);
-      over.mobBars(stage.camera, zone, (id) => MONSTERS[id].size, zone.bossUid);
-      if (!blocked) {
-        over.crosshair(zone.atkCd <= 0.02, zone.castMax > 0 && zone.castT > 0
-          ? 1 - zone.castT / zone.castMax : 0);
-      }
-      if (zone.nearExit) over.hint('[X] the road home');
-      fp.allowLeftDrag = false;
-      if (!fp.locked && !fp.dragging && !blocked && zone.time < 6) {
-        over.hint('hold right mouse and drag to look  ·  left click attacks');
-      }
-
-      const boss = bossMob(zone);
-      if (boss) {
-        const bd = MONSTERS[boss.defId];
-        over.bossBar(bd.name, bd.title ?? '', boss.hp / boss.maxHp);
-      }
-      over.flash('#b4281e', zone.hurtT * 0.75);
-      over.flash('#fff0c8', zone.killGlow * 0.22);
-      over.lowHealth(Math.max(0, 1 - (st.hp / d.maxHp) / 0.3) * 0.9);
-      drawHud(st, 'zone', zone);
-    }
-  }
-
-  stage.renderer.render(stage.scene, stage.camera);
-}
-
 function nearHarvest(z: Zone): boolean {
   for (const n of z.nodes) {
     if (n.respawn > 0) continue;
     if (Math.hypot(n.x - z.px, n.y - z.py) < 56) return true;
   }
   return false;
+}
+
+/** One frame of simulation and drawing. Split out so it can be driven by hand for captures. */
+function step(dt: number, now: number): void {
+  if (!st) { post.render(); return; }
+  tickHomestead(st, dt);
+  st.lastRealTick = Date.now();
+  const blocked = uiBlocking();
+  const d = derived(st);
+  const s = st;
+  over.begin();
+
+  if (s.scene === 'town' && town && townView) {
+    const t = town;
+    const [mx, my] = blocked ? [0, 0] : moveInput();
+    if (mx || my) { walkT += dt; townFacing = Math.atan2(my, mx); }
+    t.walkT = walkT;
+    tickTown(t, dt, mx, my, d.speed * 0.9);
+    t.facing = townFacing;
+
+    hero.paint(t.px, t.py, (c) => drawHero(c, t.px, t.py, s.hero.appearance, townFacing, walkT,
+      { gear: gearLook(s.equipped) }));
+    diorama.follow(t.px, t.py, 0, dt);
+    hero.place(t.px, t.py, 0, diorama.spriteLean);
+    trackSun(stage, t.px, t.py);
+    townView.sync(s, now, diorama);
+
+    post.render();
+    over.townLabels(stage.camera, t, blocked ? null : nearestInteract(t));
+    drawHud(s, 'town', null);
+    s.hp = Math.min(d.maxHp, s.hp + dt * d.hpRegen * 2);
+    s.mana = Math.min(d.maxMana, s.mana + dt * 4);
+    s.stamina = Math.min(d.maxStamina, s.stamina + dt * d.staminaRegen * 2);
+  } else if (s.scene === 'zone' && zone && zoneView) {
+    const [mx, my] = blocked ? [0, 0] : moveInput();
+    if (mx || my) walkT += dt;
+    if (!blocked) {
+      const [ax, ay] = aimGround();
+      if (Math.hypot(ax - zone.px, ay - zone.py) > 6) zone.facing = Math.atan2(ay - zone.py, ax - zone.px);
+    }
+    tickZone(zone, s, dt, { mx, my, attack: !blocked && mouseDown }, { onDeath, onExit: returnToTown });
+
+    if (s.scene === 'zone' && zone && zoneView) {
+      const z = zone;
+      const harvesting = z.swingT > 0 && nearHarvest(z);
+      hero.paint(z.px, z.py, (c) => drawHero(c, z.px, z.py, s.hero.appearance, z.facing, walkT, {
+        hurt: z.hurtT, swing: z.swingT, swingMax: harvesting ? 0.22 : 0.2,
+        gear: swingPiece(gearLook(s.equipped), harvesting),
+        iframes: z.iframes, shield: z.shield > 0, spin: z.spinT > 0,
+      }));
+      diorama.follow(z.px, z.py, z.groundZ, dt);
+      if (z.shake > 0.2) {
+        stage.camera.position.x += (Math.random() - 0.5) * z.shake * 0.022;
+        stage.camera.position.y += (Math.random() - 0.5) * z.shake * 0.022;
+      }
+      hero.place(z.px, z.py, z.groundZ + z.jumpZ, diorama.spriteLean);
+      trackSun(stage, z.px, z.py);
+      zoneView.sync(now, diorama);
+
+      post.render();
+      over.popups(stage.camera, z);
+      over.mobBars(stage.camera, z, (id) => MONSTERS[id].size, z.bossUid);
+      if (z.nearExit) over.hint('[X] the road home');
+      const boss = bossMob(z);
+      if (boss) {
+        const bd = MONSTERS[boss.defId];
+        over.bossBar(bd.name, bd.title ?? '', boss.hp / boss.maxHp);
+      }
+      over.flash('#b4281e', z.hurtT * 0.7);
+      over.flash('#fff0c8', z.killGlow * 0.2);
+      over.lowHealth(Math.max(0, 1 - (s.hp / d.maxHp) / 0.3) * 0.9);
+      drawHud(s, 'zone', z);
+    }
+  } else {
+    post.render();
+  }
+}
+
+let last = performance.now();
+function frame(now: number): void {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  requestAnimationFrame(frame);
+  step(dt, now);
 }
 
 // ------------------------------------------------------------------- boot
@@ -522,8 +532,18 @@ boot();
   get state() { return st; },
   get town() { return town; },
   get zone() { return zone; },
-  keys, stage, fp,
+  keys, stage, diorama, post, hero,
+  step,
+  /** Drive a couple of frames by hand and send the result to the local capture sink. */
+  capture: async (name: string, frames = 3) => {
+    for (let i = 0; i < frames; i++) step(1 / 60, performance.now());
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'));
+    if (!blob) return 'no blob';
+    const res = await fetch('http://localhost:5199/?name=' + encodeURIComponent(name), {
+      method: 'POST', body: blob,
+    });
+    return name + ' ' + (await res.text()) + ' ' + blob.size;
+  },
   wipe: () => { wipe(); location.reload(); },
   refreshPanel,
-  eye: EYE, scale: SCALE,
 };

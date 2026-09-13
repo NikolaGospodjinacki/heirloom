@@ -1,13 +1,14 @@
 # Heirloom
 
-A first-person fantasy RPG roguelite where **the run is a life and the save is a bloodline**.
+An HD-2D fantasy RPG roguelite where **the run is a life and the save is a bloodline**.
 You die, an heir is rolled with random stats and a random face, the village ages around
 you, and a slice of what you learned survives as instinct.
 
-Working prototype. Low-poly three.js, no imported art yet — every mesh is built from boxes,
-cones and spheres in code.
+Working prototype. Painted 2D characters and props stand in a small 3D diorama, under a
+tilted camera with tilt-shift, bloom and real shadows. No imported art yet: every sprite is
+drawn in code, and every building is a box with its facade painted on in code.
 
-**Two builds ship from this repo.** `/` is the first-person 3D game. `/2d/` is the original
+**Two builds ship from this repo.** `/` is the HD-2D game. `/2d/` is the original
 top-down version, preserved, still playable, with its own save. There is a link between them
 in the bottom corner of each.
 
@@ -25,9 +26,10 @@ npm run dev
 
 | | |
 |---|---|
-| `WASD` | walk, relative to where you are looking |
-| mouse | look (click once to capture the pointer) |
+| `WASD` | walk (up the screen is north) |
+| mouse | aim, wherever the cursor meets the ground |
 | left click | attack |
+| mouse wheel | zoom the camera in and out |
 | `Q` `E` `R` `F` | the four skills (also `1` `2` `3` `4`) |
 | `Space` | jump (airborne clears anything swinging at knee height) |
 | `Shift` / right click | dash (i-frames, costs stamina and a charge) |
@@ -53,28 +55,35 @@ npm run dev
 5. **Back to town** — sell, enhance, work the homestead, turn the contract in.
 6. **Die** — and generation +1 begins.
 
-## How the 3D conversion works
+## How the HD-2D renderer works
 
-The renderer was replaced; the game was not. Everything in `game/` — the combat simulation,
-boss move lists, terrain elevation, drops, XP, inheritance, the village — is unchanged, and
-so is every DOM panel. The simulation always described the world as an x/y ground plane plus
-a height, so the bridge to three.js is one mapping: sim `(x, y, z)` becomes world
-`(x, z, y)` at 1/20 scale. Nothing under `game/` knows that 3D exists.
+The renderer has been replaced twice; the game has not. Everything in `game/` (the combat
+simulation, boss move lists, terrain elevation, drops, XP, inheritance, the village) is
+untouched, and so is every DOM panel. The simulation always described the world as an x/y
+ground plane plus a height, so the bridge to three.js is one mapping: sim `(x, y, z)` becomes
+world `(x, z, y)` at 1/20 scale. Nothing under `game/` knows that 3D exists.
 
-Both builds in this repo therefore run the *same* simulation, drawn two different ways,
-which is most of why keeping the top-down version costs nearly nothing.
+- **Standees.** The top-down draw code in `render/draw.ts` still draws every hero, monster,
+  townsperson, tree and tuft of grass. It now paints into a small canvas per sprite, which
+  becomes the texture on an upright card planted at the feet and leaned back toward the
+  camera. The card casts a real shadow in the shape of the drawing. Static things share one
+  card per variant; moving things repaint theirs every frame.
+- **Buildings and terrain** are real geometry. Facades (timber frames, shutters, flower boxes,
+  glowing windows) and shingle roofs are painted onto boxes in `render3/paint.ts`. Ledges are
+  walls of painted stone with turf over the lip and shadow gathered at the foot. Ravines are
+  real holes, and on Cinder Ridge there is lava at the bottom.
+- **The ground** is one large painting per map, with a small grass or gravel grain texture
+  multiplied in at world scale. The world carries on past the edge of the map, with trees
+  and the road home.
+- **The camera** is a fixed, high diorama view looking north, so WASD always matches the
+  screen and every standee always faces you.
+- **The look** is mostly post-processing: tilt-shift blur so the scene reads as a miniature,
+  bloom on lanterns, windows and embers, a colour grade per place (golden in the village,
+  cooler in the Barrows, left alone on the already-red Ridge), and a vignette.
 
-What genuinely changed by going first person:
-
-- **You aim with your face.** Things flank you unseen. Floor telegraphs still read, but only
-  the ones in front of you.
-- **Melee is harder to sell** than a top-down arc. There is a weapon in view that swings and
-  a crosshair that brightens off cooldown, but this needs more work than the 2D version did.
-- **Verticality got much better.** Jumping onto a ledge is legible now in a way the top-down
-  build never managed.
-- **You cannot see your own gear.** The paper doll moved to your hands — the weapon and
-  shield you equipped are the ones held in front of the camera — and the kit screen still
-  shows the whole character.
+There was a first-person build in between (tag `v0.4-firstperson`). It made ledges easier
+to read and looked much worse, so it went. All three renderers ran the *same* simulation,
+which is why keeping the top-down build costs nearly nothing.
 
 ## The town
 
@@ -86,9 +95,10 @@ chimneys; **the Gilded Sow**, where a bed restores everything and the innkeep tr
 rumours; the **Adventurers Guild** with a fenced **training yard** of practice dummies and
 weapon racks; and your **homestead** with its garden rows and laundry line.
 
-It is lit for late afternoon: lantern glow pools on the cobbles, motes drift through the
-air, banners sway, and a golden-hour wash sits over the whole thing. Buildings and walls
-are solid — you walk around them, sliding along instead of sticking.
+It is lit for late afternoon: real lantern light pools on the cobbles, windows glow, chimneys
+smoke, and a golden-hour grade sits over the whole thing. A moat runs outside the wall with
+one bridge across it, and the road carries on south into the trees. Buildings and walls are
+solid; you slide along them instead of sticking.
 
 A thriving village has more stalls, more people, greener trees and flowers in the hedges. A
 struggling one is emptier and greyer, and everybody says so.
@@ -111,7 +121,7 @@ pay **mana**, so every skill competes with attacking.
 Zones have real elevation. Ledges have to be **jumped onto** — a short hop will not clear the
 lip — and you can walk off them and fall. **Ravines** are walls until you are airborne, and
 landing in one hurts. **Cinder Ridge** is five stepped tiers climbing north with something
-asleep at the top, snow-capped peaks parallaxing behind it.
+asleep at the top and snow-capped peaks on the horizon.
 
 ## Bosses
 
@@ -206,9 +216,19 @@ src/
     zone.ts        combat sim: mobs, nodes, drops, dash, hitstop, particles
     town.ts        village sim + render
   render/
-    view.ts        the old top-down projection, still used by the 2D build
+    view.ts        the top-down projection the 2D art is drawn in
     draw.ts        entity drawing, the paper doll, and the VN portraits
     look.ts        maps equipped items to what the paper doll draws
+  render3/
+    core.ts        renderer, lights, the shadow-casting sun, scene clearing
+    diorama.ts     the fixed HD-2D camera and aiming on the ground
+    sprite.ts      standees: painted cards that stand in the world and cast shadows
+    paint.ts       painted ground, facades, roofs, cliff faces, roads and grain
+    post.ts        tilt-shift, bloom, grade, vignette, and the mood of each place
+    kit.ts         ground, the skirt past the map edge, pits, small shared helpers
+    townView.ts    the village: buildings, gate, moat, lamps, people, outskirts
+    zoneView.ts    a zone: terrain, ledges, ravines, monsters, effects, outskirts
+    overlay.ts     damage numbers, health bars and labels over the 3D view
   ui/
     grid.ts        the drag-and-drop pack grid and the paper-doll slots
     panels.ts      kit, character, techniques, guild, shop, smithy, homestead, gate
@@ -218,23 +238,23 @@ src/
   main.ts          scene machine, input, game loop
 ```
 
-Perspective lives entirely in `render/view.ts` — it started isometric and became top-down
-by rewriting that one file plus the depth sort. The renderer is deliberately kept behind
-that seam so a WebGL sprite batcher can replace it later without touching game code.
+The 2D build's perspective lives entirely in `render/view.ts`; it started isometric and
+became top-down by rewriting that one file plus the depth sort. The HD-2D build reuses the
+same draw code and only changes where the drawings end up.
 
 ## Platform note
 
-This stays a web build. Canvas 2D handles a few hundred sprites a frame comfortably; past
-that the swap is to a WebGL batcher, same TypeScript. For a desktop or Steam release the
-same build wraps in **Tauri** (~8 MB installer, system webview) or Electron. Nothing on the
-roadmap — 2D sprites, music, a bigger village — comes close to needing a different engine.
+This stays a web build. The HD-2D renderer is WebGL through three.js, and real sprite
+sheets drop into the same standee cards the placeholder art uses. For a desktop or Steam
+release the same build wraps in **Tauri** (~8 MB installer, system webview) or Electron.
+Nothing on the roadmap (real sprites, music, a bigger village) needs a different engine.
 
 ## Known rough edges
 
-- Every mesh is code-built primitives. No models, no textures beyond a generated ground map.
+- All art is placeholder, drawn in code. The renderer makes it look deliberate, but the
+  characters and monsters are still simple shapes. Real sprites are the biggest upgrade left.
 - No collision against trees or rocks in the field. Town buildings and walls are solid.
-- Melee feedback in first person is the weakest part: it wants a camera kick on impact and
-  a sound before it really lands.
+- Banners and hanging shop signs from the 2D town are not in the HD-2D town yet.
 - No sound at all. This is the biggest missing multiplier on how the hits feel.
 - Ordinary monster AI is chase, shoot, or leap. Bosses pick from a move list. No packs yet.
 - No co-op. See below.
@@ -247,7 +267,7 @@ roadmap — 2D sprites, music, a bigger village — comes close to needing a dif
 ## Hosting
 
 Pushed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`, as two
-pages out of one Vite build: `/` for the 3D game (677 KB, 189 KB gzipped, mostly three.js)
+pages out of one Vite build: `/` for the HD-2D game (736 KB, 207 KB gzipped, mostly three.js)
 and `/2d/` for the original (178 KB, 61 KB gzipped). No backend; the two saves use separate
 `localStorage` keys so the builds never tread on each other.
 
@@ -268,12 +288,11 @@ Not built, and not something to bolt on quickly. The honest shape of it:
 
 ## Next up (rough order)
 
-1. Sound — hits, footsteps, level-ups, a town theme and a field theme. First person needs it
-   more than top-down did: it is most of what tells you something is behind you.
-2. Co-op over WebRTC, if the hosted build gets people playing.
-2. Collision in the field too — town is solid, zones are not yet.
-3. Class abilities on a hotbar so warrior and wizard actually play differently.
-4. Adjacency bonuses in the pack — the other half of the Backpack Battles idea.
-5. Sprites, replacing primitives layer by layer behind the same paper-doll API.
+1. Real sprites for the hero, monsters and townsfolk. The standee cards take any drawing,
+   so this is an art task, not an engine task.
+2. Sound: hits, footsteps, level-ups, a town theme and a field theme.
+3. Co-op over WebRTC, if the hosted build gets people playing.
+4. Collision in the field too. Town is solid; zones are not yet.
+5. Adjacency bonuses in the pack, the other half of the Backpack Battles idea.
 6. Village layout that visibly grows or rots with prosperity.
 7. More zones, elite spawns, a real boss fight.

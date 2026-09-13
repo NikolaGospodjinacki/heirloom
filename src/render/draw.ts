@@ -9,6 +9,14 @@ import type { Backdrop } from '../game/content';
 import { ITEM_DEFS } from '../game/items';
 import { RARITY_COLOR } from '../game/types';
 
+/**
+ * When this art is painted onto standees for the 3D diorama, anything that
+ * belongs flat on the ground (health bars, wind-up rings, cast circles) is
+ * skipped, because the 3D scene draws those itself.
+ */
+let spriteMode = false;
+export function setSpriteMode(on: boolean): void { spriteMode = on; }
+
 export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -232,7 +240,7 @@ export function drawHero(
     ctx.fill();
     ctx.restore();
   }
-  if (o.spin) {
+  if (!spriteMode && o.spin) {
     ctx.save();
     ctx.translate(sx, sy - air);
     ctx.scale(1, 0.5);
@@ -243,7 +251,7 @@ export function drawHero(
     ctx.beginPath(); ctx.arc(0, 0, 46, a + Math.PI, a + Math.PI + 2.4); ctx.stroke();
     ctx.restore();
   }
-  if (o.cast && o.cast > 0) {
+  if (!spriteMode && o.cast && o.cast > 0) {
     ctx.save();
     ctx.translate(sx, sy);
     ctx.scale(1, 0.42);
@@ -577,7 +585,7 @@ export function drawMob(ctx: CanvasRenderingContext2D, m: Mob): void {
   }
   ctx.restore();
 
-  if (!dying && m.hp < m.maxHp && d.family !== 'boss') {
+  if (!spriteMode && !dying && m.hp < m.maxHp && d.family !== 'boss') {
     const w = Math.max(26, d.size * 2.2);
     const y = sy - d.size * 2.9 - 8;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -585,7 +593,7 @@ export function drawMob(ctx: CanvasRenderingContext2D, m: Mob): void {
     ctx.fillStyle = '#c8534b';
     ctx.fillRect(sx - w / 2, y, w * Math.max(0, m.hp / m.maxHp), 4);
   }
-  if (!dying && m.windup > 0 && !d.attacks) {
+  if (!spriteMode && !dying && m.windup > 0 && !d.attacks) {
     const k = 1 - m.windup / 0.38;
     ctx.strokeStyle = 'rgba(255,90,70,0.85)';
     ctx.lineWidth = 2;
@@ -822,7 +830,7 @@ export function drawNode(ctx: CanvasRenderingContext2D, n: Node): void {
     ctx.moveTo(-9, -16); ctx.lineTo(2, -20); ctx.lineTo(0, -10); ctx.closePath(); ctx.fill();
   }
   ctx.restore();
-  if (n.hp < n.maxHp) {
+  if (!spriteMode && n.hp < n.maxHp) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(sx - 15, sy + 4, 30, 4);
     ctx.fillStyle = '#c7b26a';

@@ -281,8 +281,9 @@ export function buildTown(st: GameState): Town {
   }
   props.push({ kind: 'banner', x: gateX - 62, y: gateY - 50, variant: 1, color: '#4a5f8a' });
   props.push({ kind: 'banner', x: gateX + 50, y: gateY - 50, variant: 1, color: '#4a5f8a' });
-  props.push({ kind: 'lantern', x: gateX - 86, y: gateY + 12, variant: 1 });
-  props.push({ kind: 'lantern', x: gateX + 86, y: gateY + 12, variant: 1 });
+  // in front of the wall, where they light the way in
+  props.push({ kind: 'lantern', x: gateX - 122, y: gateY + 50, variant: 1 });
+  props.push({ kind: 'lantern', x: gateX + 122, y: gateY + 50, variant: 1 });
 
   // ------------------------------------------------------------ the square
   props.push({ kind: 'well', x: cx, y: cy, variant: 0 });
@@ -356,8 +357,8 @@ export function buildTown(st: GameState): Town {
     });
   };
 
-  addNpc('guard', gateX - 92, gateY + 62, 0, true);
-  addNpc('guard', gateX + 92, gateY + 62, 0, true);
+  addNpc('guard', gateX - 92, gateY + 66, 0, true);
+  addNpc('guard', gateX + 92, gateY + 66, 0, true);
   addNpc('elder', cx - 122, cy + 96, 26);
   for (let i = 0; i < stallCount; i++) {
     const p = props.filter((x) => x.kind === 'stall')[i];
@@ -511,7 +512,7 @@ function lanternGlow(ctx: CanvasRenderingContext2D, x: number, y: number, r: num
   ctx.fill();
 }
 
-function drawProp(ctx: CanvasRenderingContext2D, p: Prop, t: number, rich: boolean): void {
+export function drawProp(ctx: CanvasRenderingContext2D, p: Prop, t: number, rich: boolean): void {
   const x = p.x, y = p.y;
   switch (p.kind) {
     case 'tree': {
@@ -985,7 +986,7 @@ function gateHouse(ctx: CanvasRenderingContext2D, b: Building, t: number): void 
   ctx.fill();
 }
 
-function drawTownNpc(ctx: CanvasRenderingContext2D, n: TownNPC, near: boolean): void {
+export function drawTownNpc(ctx: CanvasRenderingContext2D, n: TownNPC, near: boolean): void {
   const a = n.appearance;
   if (n.kind === 'cat') {
     shadow(ctx, n.x, n.y, 8, 0.2);
@@ -1077,7 +1078,7 @@ const PLOT_TINT: Record<string, { bed: string; crop: string; accent: string }> =
  * a hired hand shows up for every wage you pay, and uncollected harvest piles
  * in a basket until somebody carries it in.
  */
-function drawPlot(
+export function drawPlot(
   ctx: CanvasRenderingContext2D, x: number, y: number,
   plot: { id: string; resource: string; owned: boolean; level: number; workers: number; pending: number },
   t: number,

@@ -57,7 +57,12 @@ export function tilePath(ctx: CanvasRenderingContext2D, wx: number, wy: number, 
   ctx.rect(wx, wy, size, size);
 }
 
+let blobShadows = true;
+/** The diorama casts real shadows from the engine, so painted blobs are switched off there. */
+export function setBlobShadows(on: boolean): void { blobShadows = on; }
+
 export function shadow(ctx: CanvasRenderingContext2D, wx: number, wy: number, r: number, alpha = 0.25): void {
+  if (!blobShadows) return;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = '#000';

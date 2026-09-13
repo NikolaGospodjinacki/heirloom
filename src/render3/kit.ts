@@ -269,7 +269,7 @@ export function groundTexture(
 export function makeGround(
   wTiles: number, hTiles: number, tileSize: number,
   chasms: { x: number; y: number; w: number; h: number }[],
-  tex: THREE.Texture, color: string,
+  tex: THREE.Texture, color: string, material?: THREE.Material,
 ): THREE.Mesh {
   const W = wTiles * tileSize * SCALE;
   const H = hTiles * tileSize * SCALE;
@@ -303,20 +303,44 @@ export function makeGround(
   }
   g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   g.computeVertexNormals();
-  const m = new THREE.MeshLambertMaterial({ map: tex, color: new THREE.Color(color) });
+  const m = material ?? new THREE.MeshLambertMaterial({ map: tex, color: new THREE.Color(color) });
   const mesh0 = new THREE.Mesh(g, m);
   mesh0.receiveShadow = true;
   return mesh0;
 }
 
-/** The inside of a hole: four walls and a floor a long way down. */
-export function makePit(
-  c: { x: number; y: number; w: number; h: number }, depth: number, color: string,
+/**
+ * Ground that carries on past the edge of the map. Without it the tilted
+ * camera looks straight off the world into the background colour. The map
+ * area is cut out, so holes in the real ground still read as holes.
+ */
+export function makeSkirt(
+  W: number, H: number, pad: number, color: string, material?: THREE.Material,
 ): THREE.Mesh {
-  const g = new THREE.BoxGeometry(c.w * SCALE, depth, c.h * SCALE);
-  const m = new THREE.MeshLambertMaterial({ color: new THREE.Color(color), side: THREE.BackSide });
-  const o = new THREE.Mesh(g, m);
-  o.position.set((c.x + c.w / 2) * SCALE, -depth / 2 + 0.02, (c.y + c.h / 2) * SCALE);
-  o.receiveShadow = true;
-  return o;
+  // The cut-out is a little smaller than the map, so the skirt tucks under its
+  // edge instead of leaving a hairline of background showing between the two.
+  const lap = 1;
+  const shape = new THREE.Shape();
+  shape.moveTo(-pad, pad);
+  shape.lineTo(W + pad, pad);
+  shape.lineTo(W + pad, -(H + pad));
+  shape.lineTo(-pad, -(H + pad));
+  shape.closePath();
+  const hole = new THREE.Path();
+  hole.moveTo(lap, -lap);
+  hole.lineTo(lap, -(H - lap));
+  hole.lineTo(W - lap, -(H - lap));
+  hole.lineTo(W - lap, -lap);
+  hole.closePath();
+  shape.holes.push(hole);
+  const g = new THREE.ShapeGeometry(shape);
+  g.rotateX(-Math.PI / 2);
+  const mm = material ?? new THREE.MeshLambertMaterial({ color: new THREE.Color(color) });
+  mm.polygonOffset = true;
+  mm.polygonOffsetFactor = 2;
+  mm.polygonOffsetUnits = 4;
+  const m = new THREE.Mesh(g, mm);
+  m.position.y = -0.04;
+  m.receiveShadow = true;
+  return m;
 }
