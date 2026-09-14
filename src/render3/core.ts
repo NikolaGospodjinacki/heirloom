@@ -107,6 +107,7 @@ export function clearGroup(g: THREE.Group): void {
 
 export function disposeTree(o: THREE.Object3D): void {
   o.traverse((n) => {
+    if ((n as THREE.InstancedMesh).isInstancedMesh) (n as THREE.InstancedMesh).dispose();
     const m = n as THREE.Mesh;
     if (m.geometry && !(m.geometry as { keep?: boolean }).keep) m.geometry.dispose?.();
     const mat = m.material as THREE.Material | THREE.Material[] | undefined;

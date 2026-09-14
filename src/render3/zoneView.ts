@@ -1,19 +1,22 @@
 import * as THREE from 'three';
 import { SCALE, Stage, clearGroup } from './core';
-import { G, mat, makeGround, makeSkirt, mesh, shade } from './kit';
-import { Sprite, standee } from './sprite';
-import { cliffFaceMaterial, grainTexture, paintZoneGround, roadStrip, withGrain } from './paint';
+import { G, mat, mesh } from './kit';
+import { Sprite, standee, standeeInstances } from './sprite';
+import { plankMaterial, soft } from './paint';
+import {
+  TerrainMeshes, WorldGrid, buildTerrainMeshes, buildWorldGrid, gridTopSim, paintWorld,
+} from './terrainMesh';
 import type { Diorama } from './diorama';
+import { SPRITE_LEAN } from './diorama';
 import type { Mood } from './post';
 import { MONSTERS } from '../game/content';
 import type { ZoneDef } from '../game/content';
-import { inChasm, standZ } from '../game/zone';
-import type { Chasm, Node as ResourceNode, Plateau, Zone } from '../game/zone';
-import { RNG } from '../game/rng';
+import { TS, T_PIT, noiseFor } from '../game/terrain';
+import type { Node as ResourceNode, Zone } from '../game/zone';
+import { standZ } from '../game/zone';
 import { ITEM_DEFS } from '../game/items';
+import { RNG } from '../game/rng';
 import { drawCritter, drawFlora, drawMob, drawNode } from '../render/draw';
-
-const TS = 48;
 
 /** Drawing box in sim px, and how far below the feet the drawing reaches. */
 const FLORA_SIZE: Record<string, [number, number, number]> = {
@@ -36,19 +39,23 @@ const CRITTER_SIZE: Record<string, [number, number, number]> = {
 };
 
 interface NodeView { sprite: Sprite; dirty: boolean }
+interface CacheView { mesh: THREE.Object3D; beam: THREE.Mesh; uid: string }
 
 /**
- * The zone as an HD-2D diorama: real terrain, cliffs and holes, with every
+ * The zone as an HD-2D diorama: stepped terrain you can climb, real holes and
+ * water, woods and peaks that carry on past the edge of the map, and every
  * creature, tree and tuft of grass a painted standee made by the 2D art.
  * The simulation is untouched; this only reads it.
  */
 export class ZoneView {
   group = new THREE.Group();
   private mobs = new Map<string, Sprite>();
+  private eliteRings = new Map<string, THREE.Mesh>();
   private nodes = new Map<string, NodeView>();
   private critters = new Map<number, Sprite>();
   private flora: { mesh: THREE.Mesh; phase: number; sways: boolean }[] = [];
   private drops = new Map<string, THREE.Group>();
+  private caches: CacheView[] = [];
   private telegraphs: THREE.Mesh[] = [];
   private particles: THREE.Points;
   private pGeo: THREE.BufferGeometry;
@@ -57,12 +64,12 @@ export class ZoneView {
   private motes: THREE.Points;
   private mGeo: THREE.BufferGeometry;
   private slashArc: THREE.Mesh;
-  private projectiles = new Map<number, THREE.Mesh>();
+  private projectiles: THREE.Mesh[] = [];
   private impactRings: { mesh: THREE.Mesh; born: number; total: number; src: object }[] = [];
   private stage: Stage;
   private zone: Zone;
-  private groundTex: THREE.Texture;
-  private glowTex: THREE.Texture | null = null;
+  private terrain: TerrainMeshes;
+  private paintTex: THREE.Texture[] = [];
   private leaned = false;
 
   constructor(stage: Stage, zone: Zone) {
@@ -70,70 +77,27 @@ export class ZoneView {
     this.zone = zone;
     const def = zone.def;
 
-    stage.scene.background = new THREE.Color(def.skyBottom);
-    stage.scene.fog = new THREE.Fog(def.skyBottom, 54, 165);
-    stage.hemi.color = new THREE.Color(shade(def.skyTop, 40));
+    const haze = def.style === 'mountain' ? '#c9d6e2' : def.skyBottom;
+    stage.scene.background = new THREE.Color(haze);
+    // fog only for the far outlands; the ground you are standing on stays crisp
+    stage.scene.fog = new THREE.Fog(haze, 85, 240);
+    stage.hemi.color = new THREE.Color(def.style === 'mountain' ? '#e8f0ff' : def.skyTop).lerp(new THREE.Color('#ffffff'), 0.3);
     stage.hemi.groundColor = new THREE.Color(def.ground);
-    stage.hemi.intensity = 1.55;
-    stage.sun.color = new THREE.Color('#ffe2b4');
-    stage.sun.intensity = 1.8;
+    stage.hemi.intensity = def.style === 'mountain' ? 1.05 : 1.45;
+    stage.sun.color = new THREE.Color(def.style === 'mountain' ? '#fff2dc' : '#ffe2b4');
+    stage.sun.intensity = def.style === 'barrows' ? 1.3 : def.style === 'mountain' ? 1.6 : 1.8;
 
-    // ---------------------------------------------------------------- ground
-    const mapW = def.w * TS * SCALE, mapH = def.h * TS * SCALE;
-    const paint = paintZoneGround(def, zone.tiles, zone.chasms, zone.plateaus, { x: zone.exitX, y: zone.exitY });
-    this.groundTex = paint.map;
-    this.glowTex = paint.glow;
-    const grain = grainTexture(def.terrain === 'ridge' || def.ambience === 'fireflies' ? 'gravel' : 'grass');
-    const groundMat = withGrain(new THREE.MeshLambertMaterial({ map: paint.map }), grain, 1.15);
-    if (paint.glow) {
-      groundMat.emissiveMap = paint.glow;
-      groundMat.emissive = new THREE.Color('#ffffff');
-      groundMat.emissiveIntensity = 1.9;
-    }
-    this.group.add(makeGround(def.w, def.h, TS, zone.chasms, paint.map, '#ffffff', groundMat));
-    this.group.add(makeSkirt(mapW, mapH, 400, paint.edge,
-      withGrain(new THREE.MeshLambertMaterial({ color: new THREE.Color(paint.edge) }), grain, 1.15)));
-    this.group.add(roadStrip(zone.exitX * SCALE, mapH, 3.8, 70));
+    // --------------------------------------------------------------- terrain
+    const grid = buildWorldGrid(zone.terrain, zone.seed);
+    const paint = paintWorld(grid, def, zone.seed);
+    this.paintTex.push(paint.map);
+    if (paint.glow) this.paintTex.push(paint.glow);
+    this.terrain = buildTerrainMeshes(grid, def, paint);
+    this.group.add(this.terrain.group);
+    if (def.style === 'ashen') this.group.add(lavaPools(grid));
 
-    const ember = def.ambience === 'embers';
-    const pitMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(ember ? '#3a1d12' : shade(def.ground, -84)) });
-    for (const c of zone.chasms) {
-      const pit = pitGeometry(zone, c, 14);
-      const inside = new THREE.Mesh(pit.geo, pitMat);
-      inside.receiveShadow = true;
-      this.group.add(inside);
-      if (!ember) continue;
-      // lava a little way down, bright enough to bloom, lighting the walls of the ravine
-      const cx = (c.x + c.w / 2) * SCALE, cz = (c.y + c.h / 2) * SCALE;
-      const lava = new THREE.Mesh(new THREE.PlaneGeometry(c.w * SCALE, c.h * SCALE),
-        new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.72, 0.2) }));
-      lava.rotation.x = -Math.PI / 2;
-      lava.position.set(cx, pit.rim - 2.2, cz);
-      this.group.add(lava);
-      const heat = new THREE.PointLight('#ff7a30', 14, 11, 1.4);
-      heat.position.set(cx, pit.rim - 1.0, cz);
-      this.group.add(heat);
-    }
-
-    // ------------------------------------------------------ cliffs and ledges
-    // Each ledge is its walls, running from the ground beside them up to the
-    // top, and a lid that reuses the ground painting where it sits on the map.
-    const face = cliffFaceMaterial(def);
-    for (const p of [...zone.plateaus].sort((a, b) => a.z - b.z)) {
-      const walls = new THREE.Mesh(riserGeometry(zone, p), face);
-      walls.castShadow = true;
-      walls.receiveShadow = true;
-      this.group.add(walls);
-
-      const top = new THREE.Mesh(lidGeometry(p, zone.chasms, mapW, mapH), groundMat);
-      top.position.y = p.z * SCALE + 0.01;
-      top.receiveShadow = true;
-      this.group.add(top);
-    }
-
-    this.group.add(this.outskirts(def, mapW, mapH));
-
-    this.group.add(makeHorizon(mapW, mapH, def.backdrop, def.skyBottom));
+    this.buildBridge(def);
+    this.dressOutlands(grid, def, zone.seed);
 
     // ---------------------------------------------------------- undergrowth
     for (const f of zone.flora) {
@@ -146,6 +110,19 @@ export class ZoneView {
       m.castShadow = f.kind === 'stump' || f.kind === 'reed' || f.kind === 'crystal';
       this.flora.push({ mesh: m, phase: (f.x * 0.07 + f.y * 0.05) % 6.28, sways: SWAYS.has(f.kind) });
       this.group.add(m);
+    }
+
+    // ------------------------------------------------------ lost belongings
+    for (const c of zone.caches) {
+      const m = standee('cache', 40, 34, 4, (ctx, fx, fy) => drawCache(ctx, fx, fy), 3);
+      m.position.set(c.x * SCALE, c.gz * SCALE, c.y * SCALE);
+      m.scale.setScalar(1.3);
+      const beam = mesh(G.cyl(), new THREE.MeshBasicMaterial({
+        color: new THREE.Color('#ffe28a'), transparent: true, opacity: 0.3, depthWrite: false,
+      }), c.x * SCALE, c.gz * SCALE + 3.2, c.y * SCALE, 0.4, 6.4, 0.4);
+      beam.castShadow = false;
+      this.group.add(m, beam);
+      this.caches.push({ mesh: m, beam, uid: c.uid });
     }
 
     // ------------------------------------------------------------ particles
@@ -165,18 +142,11 @@ export class ZoneView {
     this.mGeo = new THREE.BufferGeometry();
     this.mGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAXM * 3), 3));
     this.motes = new THREE.Points(this.mGeo, new THREE.PointsMaterial({
-      size: 0.22, color: new THREE.Color(def.ambienceColor), transparent: true,
-      opacity: 0.7, depthWrite: false,
+      size: def.ambience === 'snow' ? 0.26 : 0.22, color: new THREE.Color(def.ambienceColor), transparent: true,
+      opacity: def.ambience === 'snow' ? 0.9 : 0.7, depthWrite: false,
     }));
     this.motes.frustumCulled = false;
     this.group.add(this.motes);
-
-    // ------------------------------------------------------------- the road
-    const pad = mesh(G.ring(), mat('#e0b64f', { emissive: '#6a5018' }),
-      zone.exitX * SCALE, 0.05, zone.exitY * SCALE, 4.4, 4.4, 4.4);
-    pad.rotation.x = -Math.PI / 2;
-    pad.castShadow = false;
-    this.group.add(pad);
 
     const arcGeo = new THREE.RingGeometry(0.35, 1.9, 24, 1, -0.9, 1.8);
     this.slashArc = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({
@@ -190,32 +160,127 @@ export class ZoneView {
     stage.world.add(this.group);
   }
 
-  /** Woods and boulders past the edge of the map, so the world does not stop at a line. */
-  private outskirts(def: ZoneDef, mapW: number, mapH: number): THREE.Group {
+  /** The river crossing out of the zone, and the arch over the road home. */
+  private buildBridge(def: ZoneDef): void {
+    const t = this.zone.terrain;
+    const x0 = (t.exitTx - 1) * TS * SCALE, x1 = (t.exitTx + 2) * TS * SCALE;
+    const z0 = (t.h - 3) * TS * SCALE - 0.2, z1 = t.h * TS * SCALE + 0.6;
+    const w = x1 - x0, d = z1 - z0;
     const g = new THREE.Group();
-    const r = new RNG(def.w * 53 + def.h * 7 + 11);
-    const roadX = this.zone.exitX * SCALE;
-    const treeShare = def.trees / Math.max(1, def.trees + def.rocks);
-    for (let i = 0; i < 170; i++) {
-      const side = r.int(0, 3);
-      const out = 1.5 + Math.pow(r.next(), 1.7) * 28;
-      let x: number, z: number;
-      if (side === 0) { x = r.float(-30, mapW + 30); z = mapH + out; }
-      else if (side === 1) { x = r.float(-30, mapW + 30); z = -out; }
-      else if (side === 2) { x = -out; z = r.float(-10, mapH + 10); }
-      else { x = mapW + out; z = r.float(-10, mapH + 10); }
-      if (side === 0 && Math.abs(x - roadX) < 4) continue;
-      const tree = r.chance(treeShare);
-      const v = r.int(0, 2);
-      const m = tree
-        ? standee('outskirts:tree:' + v, 68, 66, 4, (c, fx, fy) => drawNode(c, stillNode('tree', fx, fy, v)), 2.5)
-        : standee('outskirts:rock:' + v, 40, 30, 4, (c, fx, fy) => drawNode(c, stillNode('rock', fx, fy, v)), 2.5);
-      m.position.set(x, 0, z);
-      m.scale.setScalar((tree ? 1.9 : 1.4) * r.float(0.85, 1.2));
-      this.flora.push({ mesh: m, phase: 0, sways: false });
-      g.add(m);
+    const deckGeo = new THREE.BoxGeometry(w, 0.3, d);
+    const deck = new THREE.Mesh(deckGeo, plankMaterial());
+    deck.position.set((x0 + x1) / 2, 0.05, (z0 + z1) / 2);
+    deck.castShadow = true;
+    deck.receiveShadow = true;
+    g.add(deck);
+    const wood = new THREE.MeshLambertMaterial({ color: new THREE.Color('#6b4a2a') });
+    for (const side of [-1, 1]) {
+      const rx = (x0 + x1) / 2 + side * (w / 2 - 0.12);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, d), wood);
+      rail.position.set(rx, 1.0, (z0 + z1) / 2);
+      rail.castShadow = true;
+      g.add(rail);
+      for (let z = z0 + 0.3; z <= z1; z += 1.5) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.1, 0.22), wood);
+        post.position.set(rx, 0.55, z);
+        post.castShadow = true;
+        g.add(post);
+      }
     }
-    return g;
+    // an arch where the road leaves: you can see this is the way out
+    const ax = (x0 + x1) / 2, az = t.h * TS * SCALE + 0.3;
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.42, 4.2, 0.42), wood);
+      post.position.set(ax + side * (w / 2 + 0.2), 2.1, az);
+      post.castShadow = true;
+      g.add(post);
+    }
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(w + 1.4, 0.45, 0.5), wood);
+    beam.position.set(ax, 4.1, az);
+    beam.castShadow = true;
+    g.add(beam);
+    const sign = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.7, 0.12), plankMaterial());
+    sign.position.set(ax, 3.35, az + 0.2);
+    g.add(sign);
+    const lamp = mesh(G.box(), mat('#ffcf7a', { emissive: '#ffb050' }), ax + w / 2 + 0.2, 4.7, az, 0.3, 0.36, 0.3);
+    lamp.castShadow = false;
+    g.add(lamp);
+    const light = new THREE.PointLight('#ffb05a', def.style === 'barrows' ? 10 : 5, 10, 1.6);
+    light.position.set(ax, 3.4, az - 0.6);
+    g.add(light);
+    this.group.add(g);
+  }
+
+  /** Woods, pines, boulders and dead trees on the high ground past the map and on its border. */
+  private dressOutlands(grid: WorldGrid, def: ZoneDef, seed: number): void {
+    const r = new RNG(seed ^ 0x1b873593);
+    const n = noiseFor(seed ^ 0x6c62272e);
+    const t = grid.map;
+    const buckets = new Map<string, { x: number; y: number; z: number; s: number }[]>();
+    const add = (key: string, gx: number, gy: number, s: number) => {
+      const top = gridTopSim(grid, gx, gy);
+      if (top < 0) return;
+      const list = buckets.get(key) ?? [];
+      const x = (gx + grid.ox + r.float(0.15, 0.85)) * TS * SCALE;
+      const y = (gy + grid.oy + r.float(0.2, 0.9)) * TS * SCALE;
+      list.push({ x, y: top * SCALE, z: y, s });
+      buckets.set(key, list);
+    };
+    for (let gy = 0; gy < grid.h; gy++) {
+      for (let gx = 0; gx < grid.w; gx++) {
+        const gi = gy * grid.w + gx;
+        if (grid.ter[gi] !== 0) continue;
+        const mx = gx + grid.ox, my = gy + grid.oy;
+        const inside = grid.inMap[gi] === 1;
+        if (inside && !t.border[my * t.w + mx]) continue;
+        if (my >= t.h - 5 && Math.abs(mx - t.exitTx) <= 2) continue;
+        const dens = n.fbm(gx * 0.11, gy * 0.11, 3);
+        const steps = grid.hts[gi];
+        switch (def.style) {
+          case 'woods':
+            if (r.chance(0.55 + dens * 0.3)) add('tree:' + r.int(0, 2), gx, gy, r.float(1.7, 2.4));
+            if (r.chance(0.25)) add('tree:' + r.int(0, 2), gx, gy, r.float(1.5, 2.1));
+            break;
+          case 'meadow':
+            if (r.chance(0.28 + dens * 0.35)) add('tree:' + r.int(0, 2), gx, gy, r.float(1.6, 2.2));
+            else if (r.chance(0.05)) add('rock:' + r.int(0, 2), gx, gy, r.float(1.2, 1.8));
+            break;
+          case 'fen':
+            if (r.chance(0.16 + dens * 0.2)) add('dead:' + r.int(0, 1), gx, gy, r.float(1.4, 2));
+            else if (r.chance(0.18)) add('reed', gx, gy, r.float(1.4, 1.8));
+            break;
+          case 'barrows':
+            if (r.chance(0.12)) add('dead:' + r.int(0, 1), gx, gy, r.float(1.5, 2.1));
+            else if (r.chance(0.12)) add('rock:' + r.int(0, 2), gx, gy, r.float(1.3, 2));
+            break;
+          case 'mountain':
+            if (steps < 12 && r.chance(0.3 + dens * 0.25)) add(steps > 7 ? 'pine:snow' : 'pine:' + r.int(0, 1), gx, gy, r.float(1.6, 2.3));
+            else if (r.chance(0.08)) add('rock:' + r.int(0, 2), gx, gy, r.float(1.4, 2.4));
+            break;
+          case 'ashen':
+            if (r.chance(0.05)) add('dead:1', gx, gy, r.float(1.4, 2));
+            else if (r.chance(0.1)) add('rock:' + r.int(0, 2), gx, gy, r.float(1.3, 2.2));
+            break;
+        }
+      }
+    }
+    for (const [key, items] of buckets) {
+      const [kind, variant] = key.split(':');
+      const v = Number(variant) || 0;
+      let m: THREE.InstancedMesh;
+      if (kind === 'tree') {
+        m = standeeInstances('out:tree:' + v, 68, 66, 4, (c, fx, fy) => drawNode(c, stillNode('tree', fx, fy, v)), 2.5, items, SPRITE_LEAN);
+      } else if (kind === 'rock') {
+        m = standeeInstances('out:rock:' + v, 40, 30, 4, (c, fx, fy) => drawNode(c, stillNode('rock', fx, fy, v)), 2.5, items, SPRITE_LEAN);
+      } else if (kind === 'pine') {
+        m = standeeInstances('out:pine:' + variant, 56, 92, 4, (c, fx, fy) => drawPine(c, fx, fy, v, variant === 'snow'), 2.5, items, SPRITE_LEAN);
+      } else if (kind === 'dead') {
+        m = standeeInstances('out:dead:' + v, 60, 74, 4, (c, fx, fy) => drawDeadTree(c, fx, fy, v, def.style === 'ashen'), 2.5, items, SPRITE_LEAN);
+      } else {
+        m = standeeInstances('out:reed', 20, 34, 2, (c, fx, fy) => drawFlora(c, { kind: 'reed', x: fx, y: fy, variant: 0, gz: 0 }, 0), 3, items, SPRITE_LEAN, false);
+      }
+      this.group.add(m);
+    }
   }
 
   dispose(): void {
@@ -225,8 +290,8 @@ export class ZoneView {
     for (const t of this.telegraphs) { t.geometry.dispose(); (t.material as THREE.Material).dispose(); }
     this.stage.world.remove(this.group);
     clearGroup(this.group);
-    this.groundTex.dispose();
-    this.glowTex?.dispose();
+    this.terrain.dispose();
+    for (const t of this.paintTex) t.dispose();
   }
 
   sync(now: number, cam: Diorama): void {
@@ -237,6 +302,7 @@ export class ZoneView {
 
     if (!this.leaned) {
       for (const fl of this.flora) fl.mesh.rotation.x = lean;
+      for (const c of this.caches) c.mesh.rotation.x = lean;
       this.leaned = true;
     }
 
@@ -247,6 +313,14 @@ export class ZoneView {
       if (!fl.sways) continue;
       fl.mesh.rotation.z = Math.sin(now * 0.0016 + fl.phase) * 0.07;
     }
+    for (const c of this.caches) {
+      const found = this.zone.caches.find((x) => x.uid === c.uid)?.found ?? true;
+      c.mesh.visible = !found;
+      c.beam.visible = !found;
+      (c.beam.material as THREE.MeshBasicMaterial).opacity = 0.22 + Math.sin(now * 0.004) * 0.1;
+    }
+    const wm = this.terrain.water.map;
+    if (wm) wm.offset.set((now * 0.00003) % 1, (now * 0.00001) % 1);
     this.syncDrops(now);
     this.syncProjectiles();
     this.syncTelegraphs();
@@ -261,26 +335,47 @@ export class ZoneView {
     for (const m of this.zone.mobs) {
       seen.add(m.uid);
       let s = this.mobs.get(m.uid);
+      const d = MONSTERS[m.defId];
       if (!s) {
-        const d = MONSTERS[m.defId];
         const boss = d.family === 'boss';
-        const sw = boss ? Math.max(70, d.size * 5.8) : Math.max(46, d.size * 3.8);
-        const sh = boss ? Math.max(70, d.size * 4.0) : Math.max(46, d.size * 3.5);
+        const sw = boss ? Math.max(70, d.size * 6.2) : Math.max(46, d.size * 4.4);
+        const sh = boss ? Math.max(80, d.size * 4.8) : Math.max(46, d.size * 3.9);
         s = new Sprite(sw, sh, { res: boss ? 2 : 2.5, footPad: boss ? Math.round(d.size * 0.5) : 8 });
-        s.mesh.scale.setScalar(boss ? 1.25 : 1.15);
+        s.mesh.scale.setScalar((boss ? 1.25 : 1.15) * (m.elite ? 1.4 : 1));
         this.mobs.set(m.uid, s);
         this.group.add(s.mesh);
+        if (m.elite) {
+          const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1.25, 32), new THREE.MeshBasicMaterial({
+            color: new THREE.Color('#ffd166'), transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false,
+          }));
+          ring.rotation.x = -Math.PI / 2;
+          this.eliteRings.set(m.uid, ring);
+          this.group.add(ring);
+        }
       }
       const show = near(m.x, m.y);
       s.mesh.visible = show;
       if (show) s.paint(m.x, m.y - m.gz, (c) => drawMob(c, m));
       s.place(m.x, m.y, m.gz, lean);
+      const ring = this.eliteRings.get(m.uid);
+      if (ring) {
+        ring.visible = show && m.state !== 'dead';
+        ring.position.set(m.x * SCALE, m.gz * SCALE + 0.06, m.y * SCALE);
+        ring.scale.setScalar(d.size / 12);
+      }
     }
     for (const [uid, s] of this.mobs) {
       if (seen.has(uid)) continue;
       this.group.remove(s.mesh);
       s.dispose();
       this.mobs.delete(uid);
+      const ring = this.eliteRings.get(uid);
+      if (ring) {
+        this.group.remove(ring);
+        ring.geometry.dispose();
+        (ring.material as THREE.Material).dispose();
+        this.eliteRings.delete(uid);
+      }
     }
   }
 
@@ -320,7 +415,8 @@ export class ZoneView {
       const show = near(c.x, c.y);
       s.mesh.visible = show;
       if (show) s.paint(c.x, c.y, (ctx) => drawCritter(ctx, { ...c, z: 0 }, now / 1000));
-      s.place(c.x, c.y, c.z, lean);
+      const ground = standZ(this.zone, c.x, c.y);
+      s.place(c.x, c.y, Math.max(0, Math.min(2000, ground)) + c.z, lean);
     });
   }
 
@@ -333,7 +429,7 @@ export class ZoneView {
     this.slashArc.visible = k > 0;
     m.opacity = 0.6 * k;
     m.color.set(s.color ?? '#fff6e0');
-    this.slashArc.position.set(s.x * SCALE, z.groundZ * SCALE + 0.08, s.y * SCALE);
+    this.slashArc.position.set(s.x * SCALE, (s.z ?? z.groundZ) * SCALE + 0.1, s.y * SCALE);
     this.slashArc.rotation.z = -s.ang + Math.PI / 2;
     const r = (s.range / 34) * 0.9;
     this.slashArc.scale.set(r, r, 1);
@@ -347,7 +443,7 @@ export class ZoneView {
       if (!o) {
         o = new THREE.Group();
         const col = ITEM_DEFS[d.item.defId]?.color ?? '#c9ccd6';
-        o.add(mesh(G.box(), mat(col, { emissive: shade(col, -100) }), 0, 0, 0, 0.36, 0.36, 0.36));
+        o.add(mesh(G.box(), mat(col, { emissive: shadeHex(col, -100) }), 0, 0, 0, 0.36, 0.36, 0.36));
         if (d.item.rarity !== 'common') {
           const beam = mesh(G.cyl(), new THREE.MeshBasicMaterial({
             color: new THREE.Color(rarityColor(d.item.rarity)),
@@ -372,20 +468,23 @@ export class ZoneView {
 
   private syncProjectiles(): void {
     const z = this.zone;
-    for (let i = 0; i < 40; i++) {
-      const p = z.projectiles[i];
-      let o = this.projectiles.get(i);
+    const shots: { x: number; y: number; z: number; color: string; size: number }[] = [];
+    for (const p of z.projectiles) shots.push({ x: p.x, y: p.y, z: p.z ?? z.groundZ + 18, color: p.color, size: p.size });
+    for (const p of z.netProj) shots.push(p);
+    for (let i = 0; i < Math.max(shots.length, this.projectiles.length); i++) {
+      const p = shots[i];
+      let o = this.projectiles[i];
       if (!p) { if (o) o.visible = false; continue; }
       if (!o) {
         o = mesh(G.sphere(), new THREE.MeshBasicMaterial({ color: 0xffffff }), 0, 0, 0, 0.3, 0.3, 0.3);
         o.castShadow = false;
-        this.projectiles.set(i, o);
+        this.projectiles.push(o);
         this.group.add(o);
       }
       o.visible = true;
       (o.material as THREE.MeshBasicMaterial).color.set(p.color);
       o.scale.setScalar(Math.max(0.26, p.size / 20));
-      o.position.set(p.x * SCALE, z.groundZ * SCALE + 1.0, p.y * SCALE);
+      o.position.set(p.x * SCALE, p.z * SCALE, p.y * SCALE);
     }
   }
 
@@ -412,13 +511,15 @@ export class ZoneView {
       }
       m.rotation.x = -Math.PI / 2;
       if (tg.kind !== 'circle') m.rotation.z = -tg.ang;
+      const y = (tg.z ?? 0) * SCALE + 0.08;
       if (tg.kind === 'line') {
-        m.position.set((tg.x + Math.cos(tg.ang) * tg.len / 2) * SCALE, 0.07,
+        m.position.set((tg.x + Math.cos(tg.ang) * tg.len / 2) * SCALE, y,
           (tg.y + Math.sin(tg.ang) * tg.len / 2) * SCALE);
       } else {
-        m.position.set(tg.x * SCALE, 0.07, tg.y * SCALE);
+        m.position.set(tg.x * SCALE, y, tg.y * SCALE);
       }
       m.castShadow = false;
+      m.renderOrder = 2;
       this.group.add(m);
       this.telegraphs.push(m);
     }
@@ -435,7 +536,7 @@ export class ZoneView {
         }),
       );
       ring.rotation.x = -Math.PI / 2;
-      ring.position.set(im.x * SCALE, 0.09, im.y * SCALE);
+      ring.position.set(im.x * SCALE, (im.z ?? 0) * SCALE + 0.1, im.y * SCALE);
       this.group.add(ring);
       this.impactRings.push({ mesh: ring, born: now, total: Math.max(0.08, im.t) * 1000, src: im });
     }
@@ -479,11 +580,13 @@ export class ZoneView {
     const arr = this.mGeo.attributes.position.array as Float32Array;
     const ms = this.zone.motes;
     const n = Math.min(ms.length, arr.length / 3);
+    const snow = this.zone.def.ambience === 'snow';
     for (let i = 0; i < n; i++) {
       const m = ms[i];
       const k = Math.sin((m.t / m.life) * Math.PI);
       arr[i * 3] = m.x * SCALE;
-      arr[i * 3 + 1] = k > 0 ? m.z * SCALE + 0.8 : -999;
+      const fall = snow ? (1 - m.t / m.life) * 3 : 0;
+      arr[i * 3 + 1] = k > 0 ? m.z * SCALE + 0.8 + fall : -999;
       arr[i * 3 + 2] = m.y * SCALE;
     }
     this.mGeo.attributes.position.needsUpdate = true;
@@ -498,163 +601,10 @@ function rarityColor(r: string): string {
   } as Record<string, string>)[r] ?? '#b9b4a7';
 }
 
-/** A ring of distant peaks past the map edge, only really seen near the north side. */
-function makeHorizon(mapW: number, mapH: number, kind: string, tint: string): THREE.Group {
-  const g = new THREE.Group();
-  if (kind === 'none') return g;
-  const cx = mapW / 2, cz = mapH / 2;
-  const radius = Math.max(mapW, mapH) * 0.8 + 40;
-  const tall = kind === 'peaks' ? 52 : kind === 'mountains' ? 38 : kind === 'crags' ? 26 : 16;
-  const rockA = mat(shade(tint, -54));
-  const rockB = mat(shade(tint, -30));
-  const count = 46;
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2;
-    const jitter = Math.abs((Math.sin(i * 12.9898) * 43758.5453) % 1);
-    const h = tall * (0.5 + jitter * 0.9);
-    const r = radius * (0.86 + Math.abs(Math.cos(i * 3.1)) * 0.22);
-    const peak = mesh(G.cone(), i % 3 ? rockA : rockB,
-      cx + Math.cos(a) * r, h / 2 - 4, cz + Math.sin(a) * r, h * 0.95, h, h * 0.95);
-    peak.castShadow = false;
-    peak.receiveShadow = false;
-    g.add(peak);
-    if (kind === 'peaks' && h > tall * 0.9) {
-      const cap = mesh(G.cone(), mat('#e6ebf5'),
-        cx + Math.cos(a) * r, h - h * 0.12, cz + Math.sin(a) * r, h * 0.3, h * 0.26, h * 0.3);
-      cap.castShadow = false;
-      g.add(cap);
-    }
-  }
-  return g;
-}
-
-/**
- * The walls of one ledge, in short runs. Each run goes from the ground just
- * outside it up to the top, so a step up from a lower tier is only as tall as
- * the step, and runs are left out wherever a ravine has cut into the ledge. The
- * face repeats along a wall and stretches once up it, which keeps the turf at
- * the lip and the shadow at the foot whatever the height.
- */
-function riserGeometry(zone: Zone, p: Plateau): THREE.BufferGeometry {
-  const top = p.z * SCALE;
-  const x0 = p.x * SCALE, x1 = (p.x + p.w) * SCALE;
-  const z0 = p.y * SCALE, z1 = (p.y + p.h) * SCALE;
-  const along = 2.6;
-  const pos: number[] = [], nor: number[] = [], uv: number[] = [], idx: number[] = [];
-  const wall = (ax: number, az: number, bx: number, bz: number, nx: number, nz: number): void => {
-    const len = Math.hypot(bx - ax, bz - az);
-    const runs = Math.max(1, Math.ceil(len / 2));
-    for (let s = 0; s < runs; s++) {
-      const k0 = s / runs, k1 = (s + 1) / runs, km = (s + 0.5) / runs;
-      const mx = (ax + (bx - ax) * km) / SCALE, my = (az + (bz - az) * km) / SCALE;
-      if (inChasm(zone, mx - nx * 3, my - nz * 3)) continue;
-      const base = standZ(zone, mx + nx * 3, my + nz * 3) * SCALE;
-      if (top - base < 0.05) continue;
-      const i0 = pos.length / 3;
-      pos.push(
-        ax + (bx - ax) * k0, base - 0.02, az + (bz - az) * k0,
-        ax + (bx - ax) * k1, base - 0.02, az + (bz - az) * k1,
-        ax + (bx - ax) * k1, top, az + (bz - az) * k1,
-        ax + (bx - ax) * k0, top, az + (bz - az) * k0,
-      );
-      for (let i = 0; i < 4; i++) nor.push(nx, 0, nz);
-      const uA = (len * k0) / along, uB = (len * k1) / along;
-      uv.push(uA, 0, uB, 0, uB, 1, uA, 1);
-      idx.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
-    }
-  };
-  wall(x0, z1, x1, z1, 0, 1);    // south, facing the camera
-  wall(x1, z0, x0, z0, 0, -1);   // north
-  wall(x1, z1, x1, z0, 1, 0);    // east
-  wall(x0, z0, x0, z1, -1, 0);   // west
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx);
-  return g;
-}
-
-/** The top of a ledge, painted from the ground map, with a hole wherever a ravine cuts into it. */
-function lidGeometry(p: Plateau, chasms: Chasm[], mapW: number, mapH: number): THREE.BufferGeometry {
-  const x0 = p.x * SCALE, x1 = (p.x + p.w) * SCALE;
-  const z0 = p.y * SCALE, z1 = (p.y + p.h) * SCALE;
-  // built with z negated, like the ground, so laying it flat leaves it facing up
-  const shape = new THREE.Shape();
-  shape.moveTo(x0, -z0);
-  shape.lineTo(x1, -z0);
-  shape.lineTo(x1, -z1);
-  shape.lineTo(x0, -z1);
-  shape.closePath();
-  const inset = 0.03;
-  for (const c of chasms) {
-    const hx0 = Math.max(c.x * SCALE, x0 + inset), hx1 = Math.min((c.x + c.w) * SCALE, x1 - inset);
-    const hz0 = Math.max(c.y * SCALE, z0 + inset), hz1 = Math.min((c.y + c.h) * SCALE, z1 - inset);
-    if (hx1 - hx0 < 0.05 || hz1 - hz0 < 0.05) continue;
-    const hole = new THREE.Path();
-    hole.moveTo(hx0, -hz0);
-    hole.lineTo(hx0, -hz1);
-    hole.lineTo(hx1, -hz1);
-    hole.lineTo(hx1, -hz0);
-    hole.closePath();
-    shape.holes.push(hole);
-  }
-  const g = new THREE.ShapeGeometry(shape, 1);
-  g.rotateX(-Math.PI / 2);
-  const pos = g.attributes.position;
-  const uv = new Float32Array(pos.count * 2);
-  for (let i = 0; i < pos.count; i++) {
-    uv[i * 2] = pos.getX(i) / mapW;
-    uv[i * 2 + 1] = 1 - pos.getZ(i) / mapH;
-  }
-  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  g.computeVertexNormals();
-  return g;
-}
-
-/**
- * The inside of a ravine: four walls facing in and a floor far below. Each
- * wall's top follows the ground along its edge, so a ravine cut into a ledge is
- * lined all the way up to the lip. `rim` is the lowest point of that lip.
- */
-function pitGeometry(zone: Zone, c: Chasm, depth: number): { geo: THREE.BufferGeometry; rim: number } {
-  const x0 = c.x * SCALE, x1 = (c.x + c.w) * SCALE;
-  const z0 = c.y * SCALE, z1 = (c.y + c.h) * SCALE;
-  const bottom = -depth;
-  const pos: number[] = [], nor: number[] = [], idx: number[] = [];
-  let rim = Infinity;
-  const wall = (ax: number, az: number, bx: number, bz: number, nx: number, nz: number): void => {
-    const runs = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 1.5));
-    for (let s = 0; s < runs; s++) {
-      const k0 = s / runs, k1 = (s + 1) / runs, km = (s + 0.5) / runs;
-      // the ground just outside this stretch of the edge
-      const sx = (ax + (bx - ax) * km) / SCALE - nx * 3, sy = (az + (bz - az) * km) / SCALE - nz * 3;
-      const top = standZ(zone, sx, sy) * SCALE + 0.02;
-      rim = Math.min(rim, top);
-      const i0 = pos.length / 3;
-      pos.push(
-        ax + (bx - ax) * k0, bottom, az + (bz - az) * k0,
-        ax + (bx - ax) * k1, bottom, az + (bz - az) * k1,
-        ax + (bx - ax) * k1, top, az + (bz - az) * k1,
-        ax + (bx - ax) * k0, top, az + (bz - az) * k0,
-      );
-      for (let i = 0; i < 4; i++) nor.push(nx, 0, nz);
-      idx.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
-    }
-  };
-  wall(x0, z0, x1, z0, 0, 1);    // north wall, facing south into the hole
-  wall(x1, z1, x0, z1, 0, -1);   // south wall
-  wall(x0, z1, x0, z0, 1, 0);    // west wall
-  wall(x1, z0, x1, z1, -1, 0);   // east wall
-  const i0 = pos.length / 3;
-  pos.push(x0, bottom, z1, x1, bottom, z1, x1, bottom, z0, x0, bottom, z0);
-  for (let i = 0; i < 4; i++) nor.push(0, 1, 0);
-  idx.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setIndex(idx);
-  return { geo: g, rim: Number.isFinite(rim) ? rim : 0 };
+function shadeHex(hex: string, amt: number): string {
+  const c = new THREE.Color(hex);
+  c.offsetHSL(0, 0, amt / 255);
+  return '#' + c.getHexString();
 }
 
 /** A tree or boulder that is only ever looked at: never hit, never shaking. */
@@ -662,9 +612,94 @@ function stillNode(kind: 'tree' | 'rock', x: number, y: number, variant: number)
   return { uid: '', kind, x, y, hp: 1, maxHp: 1, variant, hitFlash: 0, shakeT: 0, respawn: 0, gz: 0 };
 }
 
+function drawPine(c: CanvasRenderingContext2D, x: number, y: number, variant: number, snow: boolean): void {
+  c.fillStyle = '#5b4030';
+  c.fillRect(x - 3, y - 14, 6, 14);
+  const greens = snow ? ['#3a5a48', '#44664f'] : ['#2f5a3a', '#3a6a42'];
+  const layers = 4;
+  for (let i = 0; i < layers; i++) {
+    const w = 24 - i * 4.5, top = y - 12 - i * 15;
+    c.fillStyle = greens[(i + variant) % 2];
+    c.beginPath();
+    c.moveTo(x - w, top);
+    c.lineTo(x, top - 26);
+    c.lineTo(x + w, top);
+    c.closePath();
+    c.fill();
+    if (snow) {
+      c.fillStyle = '#eef3f7';
+      c.beginPath();
+      c.moveTo(x - w * 0.55, top - 12);
+      c.lineTo(x, top - 26);
+      c.lineTo(x + w * 0.55, top - 12);
+      c.closePath();
+      c.fill();
+    } else {
+      c.fillStyle = 'rgba(255,255,255,0.08)';
+      c.beginPath();
+      c.moveTo(x - w * 0.6, top - 4);
+      c.lineTo(x - 2, top - 22);
+      c.lineTo(x - 2, top - 4);
+      c.closePath();
+      c.fill();
+    }
+  }
+}
+
+function drawDeadTree(c: CanvasRenderingContext2D, x: number, y: number, variant: number, charred: boolean): void {
+  c.strokeStyle = charred ? '#2a2220' : '#5a4a3e';
+  c.lineCap = 'round';
+  c.lineWidth = 6;
+  c.beginPath(); c.moveTo(x, y); c.lineTo(x + (variant ? 3 : -2), y - 46); c.stroke();
+  c.lineWidth = 3;
+  const limbs: [number, number, number, number][] = [
+    [x, y - 30, x - 16, y - 46], [x + 1, y - 38, x + 14, y - 58], [x - 1, y - 44, x - 8, y - 64],
+  ];
+  for (const [a, b, cc, d] of limbs) { c.beginPath(); c.moveTo(a, b); c.lineTo(cc, d); c.stroke(); }
+  if (charred) {
+    c.fillStyle = 'rgba(255,120,50,0.6)';
+    c.fillRect(x - 1, y - 20, 2, 5);
+  }
+}
+
+function drawCache(c: CanvasRenderingContext2D, x: number, y: number): void {
+  soft(c, x, y - 12, 18, '#ffe28a', 0.35);
+  c.fillStyle = '#6b4a2a';
+  c.beginPath(); c.roundRect(x - 13, y - 16, 26, 16, 3); c.fill();
+  c.fillStyle = '#8a6440';
+  c.beginPath(); c.roundRect(x - 14, y - 22, 28, 8, 4); c.fill();
+  c.fillStyle = '#d8b45a';
+  c.fillRect(x - 2, y - 17, 4, 6);
+  c.fillStyle = 'rgba(255,255,255,0.18)';
+  c.fillRect(x - 11, y - 21, 20, 2);
+}
+
+/** Molten rock at the bottom of every hole in the Ashen Field. */
+function lavaPools(grid: WorldGrid): THREE.Mesh {
+  const pos: number[] = [], idx: number[] = [];
+  for (let gy = 0; gy < grid.h; gy++) {
+    for (let gx = 0; gx < grid.w; gx++) {
+      if (grid.ter[gy * grid.w + gx] !== T_PIT) continue;
+      const x0 = (gx + grid.ox) * TS * SCALE, x1 = x0 + TS * SCALE;
+      const z0 = (gy + grid.oy) * TS * SCALE, z1 = z0 + TS * SCALE;
+      const b = pos.length / 3;
+      pos.push(x0, -2.4, z0, x1, -2.4, z0, x1, -2.4, z1, x0, -2.4, z1);
+      idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.72, 0.2) }));
+  m.castShadow = false;
+  return m;
+}
+
 /** How the grade should feel in a zone. */
 export function zoneMood(def: ZoneDef): Mood {
   if (def.ambience === 'embers') return 'ember';
   if (def.ambience === 'fireflies') return 'gloom';
+  if (def.ambience === 'snow') return 'snow';
   return 'wild';
 }
+

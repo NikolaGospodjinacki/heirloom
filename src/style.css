@@ -488,3 +488,62 @@ button.btn.small { padding: 5px 9px; font-size: 11px; }
   padding: 4px 12px; border-radius: 20px; pointer-events: auto;
 }
 #altlink:hover { color: var(--gold); border-color: var(--gold-dim); }
+
+
+/* ---------------------------------------------------------- ranks & party */
+.rankbadge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; border-radius: 5px; padding: 0 5px;
+  font-family: Cinzel, serif; font-weight: 700; font-size: 12px; color: #1a1410;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,0.25); margin-right: 6px; flex: none;
+}
+.bar.merit { height: 7px; margin-top: 5px; }
+.bar.merit > i { background: linear-gradient(90deg, #a98a3c, #e0b64f); }
+.bar.merit > span { font-size: 7.5px; line-height: 7px; }
+.goalcard {
+  width: 250px; background: rgba(28,24,21,0.94); border: 1px solid var(--line);
+  border-left: 3px solid #8fd6e0; border-radius: 8px; padding: 7px 11px;
+  font-size: 11.5px; color: var(--ink-dim); box-shadow: var(--shadow);
+}
+.goalcard b { color: #8fd6e0; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; display: block; margin-bottom: 2px; }
+.partyframes { display: flex; flex-direction: column; gap: 5px; }
+.pframe { background: rgba(28,24,21,0.9); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: 11px; }
+.pframe .top { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.pframe .top > span:first-child { display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pframe .where { color: var(--ink-faint); font-size: 10px; flex: none; }
+.pframe .bar { height: 6px; margin-top: 4px; }
+.pframe.down { border-color: #a33c3c; background: rgba(60,18,16,0.9); }
+.partypill {
+  background: rgba(28,24,21,0.94); border: 1px solid #4a6a5a; border-radius: 10px;
+  padding: 6px 11px; font-weight: 700; color: #9fe0c0; font-size: 12px; box-shadow: var(--shadow);
+}
+.partycode {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 38px; letter-spacing: 0.25em;
+  color: var(--gold); text-align: center; padding: 12px; background: #17130f;
+  border: 1px dashed var(--gold-dim); border-radius: 10px; user-select: text;
+}
+.textin {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 17px; letter-spacing: 0.15em;
+  text-transform: uppercase; background: #17130f; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; width: 140px; user-select: text;
+}
+.rowcard.locked { opacity: 0.55; }
+.plate {
+  display: inline-flex; width: 26px; height: 26px; border-radius: 6px; align-items: center; justify-content: center;
+  font-family: Cinzel, serif; font-weight: 700; color: #1a1410; flex: none;
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,0.22);
+}
+.promo {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  pointer-events: none; animation: fade 0.3s ease; background: radial-gradient(circle, rgba(40,30,10,0.55), rgba(0,0,0,0) 60%);
+}
+.promo .plateBig {
+  width: 120px; height: 150px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
+  font-family: Cinzel, serif; font-size: 72px; font-weight: 700; color: #1a1410;
+  box-shadow: 0 0 70px rgba(255,220,140,0.65), inset 0 -8px 0 rgba(0,0,0,0.25);
+  animation: plateIn 0.8s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.promo h1 { font-size: 40px; color: var(--gold); margin: 22px 0 4px; text-shadow: 0 4px 20px #000; }
+.promo p { color: var(--ink); font-size: 15px; text-shadow: 0 2px 8px #000; margin: 0; }
+@keyframes plateIn { from { transform: scale(0.3) rotate(-20deg); opacity: 0; } }
+.invite { margin-top: 16px; padding: 10px 14px; border: 1px solid #4a6a5a; border-radius: 10px; color: #9fe0c0; background: rgba(30,50,40,0.5); }

@@ -18,6 +18,8 @@ const TS = 48;
 /** Props that stand up: drawing box (sim px), foot pad, and how big they read next to a person. */
 const STANDEE: Record<string, [number, number, number, number]> = {
   tree: [100, 96, 6, 1.6],
+  statue: [90, 150, 12, 1.45],
+  hedge: [64, 42, 4, 1.45],
   sapling: [32, 42, 3, 1.3],
   bush: [44, 28, 4, 1.35],
   lantern: [26, 62, 3, 1.4],
@@ -424,6 +426,30 @@ export class TownView {
           cloth.castShadow = true;
           g.add(cloth);
         }
+        return g;
+      }
+      case 'tower': {
+        const g = new THREE.Group();
+        const geo = new THREE.BoxGeometry(3.2, 5.6, 3.2);
+        boxUV(geo, 3.2, 5.6, 3.2, 2.2);
+        const body = new THREE.Mesh(geo, stoneMaterial());
+        body.position.y = 2.8;
+        body.castShadow = true;
+        body.receiveShadow = true;
+        g.add(body);
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+          const merlon = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), stoneMaterial('#b0a598'));
+          merlon.position.set(Math.cos(a) * 1.3, 6.0, Math.sin(a) * 1.3);
+          merlon.castShadow = true;
+          g.add(merlon);
+        }
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(2.5, 2.6, 4), roofMaterial('#7a4a3f'));
+        cap.rotation.y = Math.PI / 4;
+        cap.position.y = 7.1;
+        cap.castShadow = true;
+        g.add(cap);
+        g.position.set(p.x * SCALE, 0, p.y * SCALE);
         return g;
       }
       default:

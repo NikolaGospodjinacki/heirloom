@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { roundRect } from '../render/draw';
-import type { ZoneDef } from '../game/content';
 import type { Building, Town } from '../game/town';
 import { RNG } from '../game/rng';
 import { shade } from './kit';
@@ -58,15 +57,13 @@ function dapple(c: CanvasRenderingContext2D, W: number, H: number, n: number, r:
 
 // ------------------------------------------------------------------- ground
 
-type Rect = { x: number; y: number; w: number; h: number };
-
 function rgba(hex: string, a: number): string {
   const n = parseInt(hex.slice(1), 16);
   return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
 }
 
 /** A soft round stain of colour that fades to nothing at its edge. */
-function soft(c: CanvasRenderingContext2D, x: number, y: number, rad: number, color: string, alpha: number): void {
+export function soft(c: CanvasRenderingContext2D, x: number, y: number, rad: number, color: string, alpha: number): void {
   const g = c.createRadialGradient(x, y, 0, x, y, rad);
   g.addColorStop(0, rgba(color, alpha));
   g.addColorStop(1, rgba(color, 0));
@@ -117,24 +114,7 @@ function edgeColor(cv: HTMLCanvasElement): string {
   return '#' + hx(rr) + hx(gg) + hx(bb);
 }
 
-/** Shadow gathering at the foot of each wall of a ledge, fading out across the ground below. */
-function footShadow(c: CanvasRenderingContext2D, p: Rect, d: number): void {
-  const strip = (x: number, y: number, w: number, h: number, x0: number, y0: number, x1: number, y1: number): void => {
-    const g = c.createLinearGradient(x0, y0, x1, y1);
-    g.addColorStop(0, 'rgba(26,16,10,0.42)');
-    g.addColorStop(0.35, 'rgba(26,16,10,0.2)');
-    g.addColorStop(1, 'rgba(26,16,10,0)');
-    c.fillStyle = g;
-    c.fillRect(x, y, w, h);
-  };
-  const bottom = p.y + p.h, right = p.x + p.w;
-  strip(p.x - d * 0.4, bottom, p.w + d * 0.8, d, 0, bottom, 0, bottom + d);
-  strip(p.x - d, p.y, d, p.h, p.x, 0, p.x - d, 0);
-  strip(right, p.y, d, p.h, right, 0, right + d, 0);
-  strip(p.x, p.y - d, p.w, d, 0, p.y, 0, p.y - d);
-}
-
-function tracePath(c: CanvasRenderingContext2D, pts: [number, number][]): void {
+export function tracePath(c: CanvasRenderingContext2D, pts: [number, number][]): void {
   c.beginPath();
   c.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
@@ -175,90 +155,6 @@ export interface GroundPaint {
   glow: THREE.CanvasTexture | null;
   /** the colour the ground carries on in past the edge of the map */
   edge: string;
-}
-
-export function paintZoneGround(
-  def: ZoneDef, tiles: Uint8Array, chasms: Rect[], plateaus: (Rect & { z: number })[],
-  exit: { x: number; y: number },
-): GroundPaint {
-  const S = 0.5;
-  const W = def.w * 48, H = def.h * 48;
-  const [cv, c] = cvs(W * S, H * S);
-  c.scale(S, S);
-  const r = new RNG(def.w * 131 + def.h * 17);
-  const ember = def.ambience === 'embers';
-  // a touch brighter than the 2D map: the diorama is lit, not flat, and reads darker
-  paintField(c, def.w, def.h, tiles, def.ground, def.ground2, 14, r);
-  const edge = edgeColor(cv);
-  dapple(c, W, H, Math.round((W * H) / 70000), r);
-  for (let i = 0; i < (W * H) / 50000; i++) {
-    const x = r.float(0, W), y = r.float(0, H), rx = r.float(30, 100);
-    c.fillStyle = 'rgba(92,72,50,0.10)';
-    c.beginPath();
-    c.ellipse(x, y, rx, rx * r.float(0.45, 0.8), r.float(0, 3), 0, Math.PI * 2);
-    c.fill();
-  }
-  // the track you came in on, from the way out to the edge of the map
-  paintRoad(c, exit.x, exit.y, exit.x, H + 40, 60, r, false);
-
-  // Higher ground is a shade lighter (on the ridge, ashier with every step up),
-  // and shadow gathers at the foot of every wall without spilling onto higher ground.
-  const sorted = [...plateaus].sort((a, b) => a.z - b.z);
-  for (const p of sorted) {
-    c.fillStyle = ember ? 'rgba(206,190,180,0.07)' : 'rgba(255,246,210,0.05)';
-    c.fillRect(p.x, p.y, p.w, p.h);
-  }
-  for (const p of sorted) {
-    c.save();
-    c.beginPath();
-    c.rect(-100, -100, W + 200, H + 200);
-    for (const q of sorted) if (q.z > p.z) c.rect(q.x, q.y, q.w, q.h);
-    c.clip('evenodd');
-    footShadow(c, p, 36);
-    c.restore();
-    // the lip catches the light
-    c.fillStyle = 'rgba(255,250,225,0.16)';
-    c.fillRect(p.x, p.y + p.h - 6, p.w, 6);
-    c.fillRect(p.x, p.y, 4, p.h);
-    c.fillRect(p.x + p.w - 4, p.y, 4, p.h);
-  }
-
-  // crumbly rims, so holes read as edges rather than missing polygons
-  for (const ch of chasms) {
-    c.fillStyle = ember ? 'rgba(40,20,12,0.6)' : 'rgba(46,32,22,0.5)';
-    roundRect(c, ch.x - 16, ch.y - 16, ch.w + 32, ch.h + 32, 24);
-    c.fill();
-  }
-
-  let glow: THREE.CanvasTexture | null = null;
-  if (ember) {
-    // Cinder Ridge smoulders: dark scars in the rock with a hot seam in each,
-    // painted once for colour and again for the glow the bloom picks up.
-    const [gcv, g] = cvs(W * S, H * S);
-    g.scale(S, S);
-    g.fillStyle = '#000';
-    g.fillRect(0, 0, W, H);
-    for (const ctx of [c, g]) { ctx.lineJoin = 'round'; ctx.lineCap = 'round'; }
-    const count = Math.round((W * H) / 90000);
-    for (let i = 0; i < count; i++) {
-      let x = r.float(0, W), y = r.float(0, H), ang = r.float(0, Math.PI * 2);
-      const pts: [number, number][] = [[x, y]];
-      const steps = r.int(5, 14);
-      for (let k = 0; k < steps; k++) {
-        ang += r.float(-0.9, 0.9);
-        const len = r.float(10, 26);
-        x += Math.cos(ang) * len;
-        y += Math.sin(ang) * len;
-        pts.push([x, y]);
-      }
-      tracePath(c, pts); c.strokeStyle = 'rgba(30,16,10,0.7)'; c.lineWidth = 7; c.stroke();
-      tracePath(c, pts); c.strokeStyle = '#d8602a'; c.lineWidth = 2.2; c.stroke();
-      tracePath(g, pts); g.strokeStyle = 'rgba(255,110,40,0.4)'; g.lineWidth = 6; g.stroke();
-      tracePath(g, pts); g.strokeStyle = '#ffb060'; g.lineWidth = 2.2; g.stroke();
-    }
-    glow = tex(gcv);
-  }
-  return { map: tex(cv), glow, edge };
 }
 
 /** The whole town floor: grass, roads, the paved square, the banks of the moat, and the road out. */
@@ -381,82 +277,6 @@ export function plankMaterial(): THREE.MeshLambertMaterial {
       c.fillRect(r.int(8, S - 8), i * plankH + plankH / 2 - 1, 3, 3);
     }
     return new THREE.MeshLambertMaterial({ map: tex(cv, true) });
-  });
-}
-
-/**
- * The wall of a ledge, painted to stretch once over its whole height: turf
- * curling over the lip, layered stone, and shadow gathering at the foot. It
- * repeats along the wall and never up it.
- */
-export function cliffFaceMaterial(def: ZoneDef): THREE.MeshLambertMaterial {
-  return cachedMat('cliffface:' + def.id, () => {
-    const CW = 256, CH = 96;
-    const [cv, c] = cvs(CW, CH);
-    const ember = def.ambience === 'embers';
-    const gloom = def.ambience === 'fireflies';
-    const rock = ember ? '#5e4238' : gloom ? '#5d5866' : def.terrain === 'broken' ? '#6f6a57' : '#8a7156';
-    const turf = ember ? '#7e6a60' : shade(def.ground2, 6);
-    const r = new RNG(def.w * 7 + def.h * 3 + 1);
-    const across = (fn: (ox: number) => void): void => { fn(-CW); fn(0); fn(CW); };
-
-    c.fillStyle = rock;
-    c.fillRect(0, 0, CW, CH);
-    // bedding planes
-    for (let y = 14; y < CH; y += r.int(8, 13)) {
-      c.fillStyle = shade(rock, r.int(-14, 10));
-      c.fillRect(0, y, CW, r.int(3, 6));
-    }
-    // stones, each with a lit top and a dark underside
-    for (let i = 0; i < 54; i++) {
-      const x = r.float(0, CW), y = r.float(16, CH - 10), w = r.float(12, 32), h = r.float(7, 15);
-      const tone = shade(rock, r.int(-16, 16));
-      across((ox) => {
-        c.fillStyle = 'rgba(0,0,0,0.24)';
-        roundRect(c, x + ox, y + 2, w, h, 4); c.fill();
-        c.fillStyle = tone;
-        roundRect(c, x + ox, y, w, h, 4); c.fill();
-        c.fillStyle = 'rgba(255,255,255,0.13)';
-        c.fillRect(x + ox + 3, y + 1, Math.max(1, w - 6), 2);
-      });
-    }
-    // a few deep cracks running down the face
-    c.strokeStyle = 'rgba(20,12,8,0.35)';
-    c.lineWidth = 1.5;
-    for (let i = 0; i < 7; i++) {
-      const pts: [number, number][] = [];
-      let x = r.float(0, CW);
-      for (let y = 12; y < CH; y += r.float(8, 16)) { pts.push([x, y]); x += r.float(-5, 5); }
-      if (pts.length < 2) continue;
-      across((ox) => {
-        tracePath(c, pts.map(([px, py]) => [px + ox, py] as [number, number]));
-        c.stroke();
-      });
-    }
-    // shadow pooling at the foot
-    const foot = c.createLinearGradient(0, CH * 0.45, 0, CH);
-    foot.addColorStop(0, 'rgba(18,10,6,0)');
-    foot.addColorStop(1, 'rgba(18,10,6,0.5)');
-    c.fillStyle = foot;
-    c.fillRect(0, 0, CW, CH);
-    // turf over the lip: a shaded underside, then the grass itself, hanging in tufts
-    const tufts: [number, number, number][] = [];
-    for (let x = 0; x < CW; x += r.float(5, 11)) tufts.push([x, r.float(3, 11), r.float(3, 6)]);
-    c.fillStyle = shade(turf, -30);
-    c.fillRect(0, 0, CW, 14);
-    for (const [x, len, w] of tufts) {
-      across((ox) => { c.beginPath(); c.ellipse(x + ox, 13, w, len + 2, 0, 0, Math.PI); c.fill(); });
-    }
-    c.fillStyle = turf;
-    c.fillRect(0, 0, CW, 11);
-    for (const [x, len, w] of tufts) {
-      across((ox) => { c.beginPath(); c.ellipse(x + ox, 10, w * 0.8, len, 0, 0, Math.PI); c.fill(); });
-    }
-    c.fillStyle = 'rgba(255,250,222,0.28)';
-    c.fillRect(0, 0, CW, 3);
-    const t = tex(cv);
-    t.wrapS = THREE.RepeatWrapping;
-    return new THREE.MeshLambertMaterial({ map: t });
   });
 }
 

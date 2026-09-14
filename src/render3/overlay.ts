@@ -73,7 +73,7 @@ export class Overlay {
   popups(cam: THREE.Camera, z: Zone): void {
     const c = this.ctx;
     for (const p of z.popups) {
-      const s = this.project(cam, p.x, p.y, 40);
+      const s = this.project(cam, p.x, p.y, p.z ?? 40);
       if (!s) continue;
       const [x, y, dist] = s;
       const k = p.t / p.life;
@@ -213,6 +213,75 @@ export class Overlay {
     c.save();
     c.fillStyle = g;
     c.fillRect(0, 0, this.w, this.h);
+    c.restore();
+  }
+
+  /** A friend's name and health over their head; red and pulsing when they are down. */
+  heroTag(
+    cam: THREE.Camera, sx: number, sy: number, sz: number,
+    name: string, hpFrac: number, color: string, downed: boolean, bleed: number,
+  ): void {
+    const s = this.project(cam, sx, sy, sz + 70);
+    if (!s) return;
+    const [x, y, dist] = s;
+    if (dist > 70) return;
+    const c = this.ctx;
+    c.save();
+    c.font = '700 12px ui-sans-serif, system-ui';
+    c.textAlign = 'center';
+    const label = downed ? name + '  DOWN ' + Math.ceil(bleed) + 's' : name;
+    const tw = c.measureText(label).width;
+    c.fillStyle = downed ? 'rgba(90,16,16,0.85)' : 'rgba(20,17,14,0.72)';
+    round(c, x - tw / 2 - 8, y - 14, tw + 16, 19, 6);
+    c.fill();
+    c.fillStyle = color;
+    c.fillRect(x - tw / 2 - 8, y - 14, 3, 19);
+    c.fillStyle = downed ? '#ffb4a8' : '#efe6d6';
+    c.fillText(label, x, y);
+    c.fillStyle = 'rgba(0,0,0,0.6)';
+    c.fillRect(x - 22, y + 8, 44, 5);
+    c.fillStyle = hpFrac > 0.3 ? '#6fbf6a' : '#d8564c';
+    c.fillRect(x - 21, y + 9, 42 * Math.max(0, Math.min(1, hpFrac)), 3);
+    c.restore();
+  }
+
+  /** A filling ring, for picking a friend up off the ground. */
+  ring(cam: THREE.Camera, sx: number, sy: number, sz: number, frac: number, color: string, label: string): void {
+    const s = this.project(cam, sx, sy, sz + 30);
+    if (!s) return;
+    const [x, y] = s;
+    const c = this.ctx;
+    c.save();
+    c.lineWidth = 5;
+    c.strokeStyle = 'rgba(0,0,0,0.5)';
+    c.beginPath(); c.arc(x, y, 22, 0, Math.PI * 2); c.stroke();
+    c.strokeStyle = color;
+    c.beginPath(); c.arc(x, y, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); c.stroke();
+    c.font = '700 12px ui-sans-serif, system-ui';
+    c.textAlign = 'center';
+    c.fillStyle = '#efe6d6';
+    c.fillText(label, x, y + 44);
+    c.restore();
+  }
+
+  /** Big words across the middle of the screen. */
+  banner(text: string, sub: string, color = '#ff8a7a'): void {
+    const c = this.ctx;
+    c.save();
+    c.textAlign = 'center';
+    c.font = '700 34px Cinzel, Georgia, serif';
+    c.lineWidth = 5;
+    c.strokeStyle = 'rgba(0,0,0,0.75)';
+    c.strokeText(text, this.w / 2, this.h * 0.32);
+    c.fillStyle = color;
+    c.fillText(text, this.w / 2, this.h * 0.32);
+    if (sub) {
+      c.font = '600 14px ui-sans-serif, system-ui';
+      c.lineWidth = 4;
+      c.strokeText(sub, this.w / 2, this.h * 0.32 + 28);
+      c.fillStyle = '#efe6d6';
+      c.fillText(sub, this.w / 2, this.h * 0.32 + 28);
+    }
     c.restore();
   }
 

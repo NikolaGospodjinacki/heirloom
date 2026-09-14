@@ -9,10 +9,11 @@ export default defineConfig({
   server: { port: 5173, strictPort: false },
   build: {
     target: 'es2022',
-    chunkSizeWarningLimit: 900,
+    // three.js and the peer-to-peer library are most of it
+    chunkSizeWarningLimit: 1600,
     rollupOptions: {
       input: {
-        // the first-person 3D game
+        // the HD-2D game
         main: resolve(__dirname, 'index.html'),
         // the original top-down build, kept playable at /2d/
         twod: resolve(__dirname, '2d/index.html'),

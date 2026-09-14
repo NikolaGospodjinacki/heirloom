@@ -153,6 +153,10 @@ export interface Appearance {
   build: number;      // 0..1 slim..broad
   hairStyle: number;
   height: number;     // 0.9..1.15
+  /** pointed ears, for the one elf in town */
+  ears?: 'elf';
+  beard?: string;
+  patch?: boolean;
 }
 
 export interface Trait {
@@ -175,7 +179,7 @@ export interface Hero {
   generation: number;
 }
 
-export type QuestKind = 'kill' | 'gather' | 'chop' | 'mine' | 'boss';
+export type QuestKind = 'kill' | 'gather' | 'chop' | 'mine' | 'boss' | 'bounty' | 'recover';
 
 export interface Quest {
   id: string;
@@ -193,6 +197,14 @@ export interface Quest {
   giver: string;
   flavor: string;
   danger: number;
+  /** the plate this work is graded for, F = 0 */
+  rank: number;
+  /** merit toward your next promotion trial */
+  merit: number;
+  /** a promotion trial rather than ordinary work */
+  trial?: boolean;
+  /** bounties: the name the notice gives the brute */
+  eliteName?: string;
 }
 
 export interface VillageNPC {

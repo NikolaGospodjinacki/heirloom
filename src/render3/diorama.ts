@@ -6,8 +6,12 @@ import { SCALE, Stage } from './core';
  * like a diorama on a desk. Its yaw never changes, so WASD stays aligned with
  * the screen and every painted standee always faces it.
  */
+export const DIORAMA_PITCH = -0.74;
+/** Standees lean back by this much so the tilted camera does not squash them. */
+export const SPRITE_LEAN = DIORAMA_PITCH * 0.42;
+
 export class Diorama {
-  pitch = -0.74;
+  pitch = DIORAMA_PITCH;
   dist = 27;
   minDist = 14;
   maxDist = 44;

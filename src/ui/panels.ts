@@ -5,7 +5,10 @@ import {
 import { ITEM_DEFS, displayName, isGear, itemValue, makeItem, slotOf } from '../game/items';
 import { autoPlace, remove, usedCells } from '../game/backpack';
 import { levelProgress } from '../game/bloodline';
-import { ZONES } from '../game/content';
+import { MONSTERS, ZONES, ZONE_ORDER } from '../game/content';
+import { RANKS, rankDef } from '../game/ranks';
+import { veteran } from './story';
+import type { Party } from '../net/party';
 import { TECHNIQUES, canLearn, techById } from '../game/techniques';
 import {
   GameState, PLOT_DEFS, RESOURCE_NAMES, clickPlot, collectAll, collectPlot,
@@ -18,16 +21,29 @@ import { gearLook } from '../render/look';
 import { clear, el, fmt, hideTip, showTip, toast } from './dom';
 import { GridView, SlotView, dropZones, itemTooltip } from './grid';
 
+/** What the party screen can ask the game to do. */
+export interface PartyApi {
+  current: () => Party | null;
+  host: () => Promise<void>;
+  join: (code: string) => Promise<void>;
+  leave: () => void;
+  invite: () => string;
+}
+
 export interface UICtx {
   st: GameState;
   close: () => void;
   refresh: () => void;
   travel: (zoneId: string, bossTarget?: string) => void;
   save: () => void;
+  /** a promotion just happened: show the ceremony */
+  promoted: (rank: number) => void;
+  party: PartyApi;
 }
 
 export type PanelKind =
-  | 'bag' | 'char' | 'tech' | 'guild' | 'shop' | 'smith' | 'home' | 'gate';
+  | 'bag' | 'char' | 'tech' | 'guild' | 'shop' | 'smith' | 'home' | 'gate'
+  | 'registry' | 'trophies' | 'memorial' | 'party';
 
 let liveViews: GridView[] = [];
 let liveSlots: SlotView[] = [];
@@ -77,6 +93,10 @@ export function openPanel(kind: PanelKind, ctx: UICtx): void {
       case 'smith': node = smithPanel(ctx); break;
       case 'home': node = homePanel(ctx); break;
       case 'gate': node = gatePanel(ctx); break;
+      case 'registry': node = registryPanel(ctx); break;
+      case 'trophies': node = trophiesPanel(ctx); break;
+      case 'memorial': node = memorialPanel(ctx); break;
+      case 'party': node = partyPanel(ctx); break;
     }
     host.append(node);
   };
@@ -387,54 +407,83 @@ function techPanel(ctx: UICtx): HTMLElement {
 
 // ----------------------------------------------------------------- GUILD
 
-function dangerPill(d: number): HTMLElement {
-  const label = d <= 1 ? 'trivial' : d <= 2 ? 'easy' : d <= 3 ? 'risky' : d <= 4 ? 'deadly' : 'suicidal';
-  return el('span', { class: 'pill d' + Math.min(6, d) }, label);
+function platePill(n: number): HTMLElement {
+  const R = rankDef(n);
+  const pill = el('span', { class: 'plate', style: 'background:' + R.color }, R.letter);
+  pill.title = R.plate;
+  return pill;
+}
+
+function meritBar(have: number, need: number): HTMLElement {
+  const fill = el('i', { style: 'width:' + Math.min(100, (have / Math.max(1, need)) * 100) + '%' });
+  return el('div', { class: 'bar merit', style: 'margin-top:6px;height:10px' }, fill,
+    el('span', { style: 'line-height:10px;font-size:8.5px' }, have + ' / ' + need + ' merit'));
 }
 
 function guildPanel(ctx: UICtx): HTMLElement {
   const st = ctx.st;
   const body = el('div');
+  const R = rankDef(st.rank);
+
+  body.append(el('div', { class: 'rowcard', style: 'margin-bottom:12px;border-color:' + R.color },
+    platePill(st.rank),
+    el('div', { class: 'grow' },
+      el('div', { class: 't' }, R.plate + ' \u00b7 ' + R.title),
+      el('div', { class: 's' }, Number.isFinite(R.merit)
+        ? (st.merit >= R.merit ? 'Ready for your trial. See ' + veteran(st).name + ' by the fire.' : 'Finished contracts earn merit toward your next trial.')
+        : 'You wear the last plate there is.'),
+      Number.isFinite(R.merit) ? meritBar(st.merit, R.merit) : null,
+    ),
+  ));
 
   if (st.active) {
     const q = st.active;
     const done = q.have >= q.need;
     const card = el('div', { class: 'rowcard', style: 'border-color:' + (done ? '#7a6a2c' : '#4a4038') });
-    card.append(el('div', { class: 'grow' },
+    card.append(platePill(q.rank), el('div', { class: 'grow' },
       el('div', { class: 't' }, q.title),
-      el('div', { class: 's' }, q.have + ' / ' + q.need + ' · ' + ZONES[q.zoneId].name),
+      el('div', { class: 's' }, q.have + ' / ' + q.need + ' \u00b7 ' + ZONES[q.zoneId].name
+        + (q.trial ? ' \u00b7 report to ' + veteran(st).name : '')),
     ));
-    if (done) {
-      const b = el('button', { class: 'btn primary' }, 'Turn in  (+' + q.rewardGold + 'g)');
-      b.addEventListener('click', () => { completeQuest(st); ctx.refresh(); refreshPanel(); ctx.save(); });
+    if (done && !q.trial) {
+      const b = el('button', { class: 'btn primary' }, 'Turn in  (+' + q.rewardGold + 'g, +' + q.merit + ' merit)');
+      b.addEventListener('click', () => {
+        const res = completeQuest(st);
+        ctx.refresh(); refreshPanel(); ctx.save();
+        if (res.promoted) ctx.promoted(st.rank);
+      });
       card.append(b);
-    } else {
+    } else if (!done) {
       const b = el('button', { class: 'btn small danger' }, 'Abandon');
       b.addEventListener('click', () => { st.active = null; refreshPanel(); ctx.refresh(); });
       card.append(b);
     }
     body.append(
-      el('h4', { style: 'margin:0 0 8px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, 'ACTIVE CONTRACT'),
+      el('h4', { style: 'margin:0 0 8px;font-size:11px;letter-spacing:.1em;color:#8c8069' }, q.trial ? 'YOUR TRIAL' : 'ACTIVE CONTRACT'),
       card, el('div', { class: 'sep' }));
   }
 
   const list = el('div', { class: 'list' });
   for (const q of st.board) {
-    const row = el('div', { class: 'rowcard' + (st.active ? '' : ' click') });
+    const stretch = q.rank > st.rank;
+    const tooHigh = q.rank > st.rank + 1;
+    const row = el('div', { class: 'rowcard' + (st.active || tooHigh ? '' : ' click') + (tooHigh ? ' locked' : '') });
     row.append(
-      dangerPill(q.danger),
+      platePill(q.rank),
       el('div', { class: 'grow' },
-        el('div', { class: 't' }, q.title),
-        el('div', { class: 's' }, ZONES[q.zoneId].name + ' · ' + q.need + ' × ' + q.targetName),
-        el('div', { class: 's' }, el('em', {}, q.flavor)),
+        el('div', { class: 't' }, q.title + (stretch ? '  \u2191' : '')),
+        el('div', { class: 's' }, ZONES[q.zoneId].name + ' \u00b7 ' + q.need + ' \u00d7 ' + q.targetName
+          + (stretch ? ' \u00b7 a plate above yours' : '')),
+        el('div', { class: 's' }, el('em', {}, q.giver + ': ' + q.flavor)),
       ),
       el('div', { style: 'text-align:right;flex:none' },
         el('div', { class: 't', style: 'color:#e0b64f' }, q.rewardGold + 'g'),
+        el('div', { class: 's', style: 'color:#8fd6e0' }, '+' + q.merit + ' merit'),
         el('div', { class: 's', style: 'color:' + SKILL_COLOR[q.rewardSkill] },
           '+' + Math.round(q.rewardXp) + ' ' + SKILL_NAMES[q.rewardSkill]),
       ),
     );
-    if (!st.active) {
+    if (!st.active && !tooHigh) {
       row.addEventListener('click', () => {
         st.active = { ...q, have: 0 };
         st.board = st.board.filter((x) => x.id !== q.id);
@@ -455,8 +504,132 @@ function guildPanel(ctx: UICtx): HTMLElement {
     body.append(rerollBtn);
   }
 
-  const gm = st.village.npcs.find((n) => n.role === 'guildmaster')!;
-  return shell('Quest Board', 'Posted by ' + gm.name, body, 680);
+  return shell('Quest Board', 'Adventurers Guild of ' + st.village.name, body, 720);
+}
+
+function registryPanel(ctx: UICtx): HTMLElement {
+  const st = ctx.st;
+  const body = el('div');
+  const list = el('div', { class: 'list' });
+  for (const R of RANKS) {
+    const current = R.n === st.rank;
+    const opens = ZONE_ORDER.find((id) => ZONES[id].rank === R.n);
+    const trial = R.trialBoss ? MONSTERS[R.trialBoss] : null;
+    const row = el('div', {
+      class: 'rowcard' + (R.n > st.rank ? ' locked' : ''),
+      style: current ? 'border-color:' + R.color : '',
+    });
+    row.append(platePill(R.n), el('div', { class: 'grow' },
+      el('div', { class: 't' }, R.letter + '-rank \u00b7 ' + R.plate + ' \u00b7 ' + R.title
+        + (current ? '   (you)' : R.n < st.rank ? '   \u2713' : '')),
+      el('div', { class: 's' }, (opens ? 'Opens ' + ZONES[opens].name + '. ' : '')
+        + (trial && R.trialZone ? 'Trial for the next plate: ' + trial.name + ' in ' + ZONES[R.trialZone].name + '.' : 'The Hero wore this one.')),
+      current && Number.isFinite(R.merit) ? meritBar(st.merit, R.merit) : null,
+    ));
+    list.append(row);
+  }
+  body.append(list, el('div', { class: 'sep' }), el('div', { class: 'muted' },
+    'Each plate is worth +5% damage and +8 health. The best plate your family has worn: '
+    + rankDef(st.renown ?? 0).plate + '. The guild lets a new heir start at the '
+    + rankDef(Math.floor((st.renown ?? 0) / 2)).plate + '.'));
+  return shell('Registry of Plates', 'Adventurer ranks, F to S', body, 680);
+}
+
+function trophiesPanel(ctx: UICtx): HTMLElement {
+  const st = ctx.st;
+  const body = el('div');
+  const ids = Object.keys(st.trophies ?? {}).filter((id) => MONSTERS[id]);
+  if (!ids.length) body.append(el('div', { class: 'muted' }, 'Empty hooks, and a brass plaque that says: reserved.'));
+  const list = el('div', { class: 'list' });
+  for (const id of ids) {
+    const md = MONSTERS[id];
+    list.append(el('div', { class: 'rowcard' },
+      el('div', { class: 'swatch', style: 'background:' + md.color }),
+      el('div', { class: 'grow' }, el('div', { class: 't' }, md.name), el('div', { class: 's' }, md.title ?? '')),
+      el('div', { class: 't', style: 'color:#e0b64f' }, '\u00d7 ' + st.trophies[id]),
+    ));
+  }
+  body.append(list);
+  return shell('Trophy Wall', 'Everything the ' + st.hero.name.split(' ').pop() + 's have put down', body, 540);
+}
+
+function memorialPanel(ctx: UICtx): HTMLElement {
+  const st = ctx.st;
+  const body = el('div');
+  if (!st.epitaphs.length) body.append(el('div', { class: 'muted' }, 'No names from your family on the wall. Keep it that way.'));
+  const list = el('div', { class: 'list' });
+  for (const e of st.epitaphs) {
+    list.append(el('div', { class: 'rowcard' },
+      platePill(e.rank ?? 0),
+      el('div', { class: 'grow' },
+        el('div', { class: 't' }, e.name),
+        el('div', { class: 's' }, 'Generation ' + e.gen + ' \u00b7 killed by ' + e.cause + ' \u00b7 ' + e.kills + ' kills')),
+    ));
+  }
+  body.append(list);
+  return shell('The Wall of Names', 'Adventurers of Ashford who did not come home', body, 560);
+}
+
+function partyPanel(ctx: UICtx): HTMLElement {
+  const api = ctx.party;
+  const p = api.current();
+  const body = el('div');
+  if (!p) {
+    body.append(el('p', { class: 'muted', style: 'margin-top:0;line-height:1.55' },
+      'Play with friends. Everyone brings their own hero and their own save. When the host sets out, the party follows; '
+      + 'monsters get tougher for every friend; loot is rolled for each of you; and if you go down, a friend has thirty seconds to pick you up.'));
+    const hostBtn = el('button', { class: 'btn primary', style: 'padding:11px 20px' }, 'Host a party');
+    hostBtn.addEventListener('click', () => {
+      (hostBtn as HTMLButtonElement).disabled = true;
+      hostBtn.textContent = 'Opening a room\u2026';
+      api.host().then(() => refreshPanel()).catch((e: Error) => { toast(e.message, 4200); refreshPanel(); });
+    });
+    const input = el('input', { class: 'textin', maxlength: '8', placeholder: 'CODE' }) as HTMLInputElement;
+    const joinBtn = el('button', { class: 'btn' }, 'Join');
+    const go = () => {
+      const code = input.value.trim();
+      if (!code) return;
+      (joinBtn as HTMLButtonElement).disabled = true;
+      joinBtn.textContent = 'Joining\u2026';
+      api.join(code).then(() => refreshPanel()).catch((e: Error) => { toast(e.message, 4600); refreshPanel(); });
+    };
+    joinBtn.addEventListener('click', go);
+    input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') go(); });
+    body.append(
+      el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, hostBtn,
+        el('span', { class: 'muted' }, 'or join with a code'), input, joinBtn),
+      el('div', { class: 'sep' }),
+      el('div', { class: 'muted' }, 'Connections go straight between players. On very strict office networks that can fail; the same Wi-Fi or a phone hotspot almost always works.'),
+    );
+    return shell('Party', 'Adventure together', body, 620);
+  }
+
+  body.append(el('div', { class: 'muted', style: 'margin-bottom:6px' },
+    p.role === 'host' ? 'You are hosting. Share this code, or the link:' : 'You are in a party. Code:'));
+  body.append(el('div', { class: 'partycode' }, p.code));
+  const copy = el('button', { class: 'btn', style: 'margin-top:10px' }, 'Copy invite link');
+  copy.addEventListener('click', () => {
+    navigator.clipboard?.writeText(api.invite()).then(() => toast('Invite link copied')).catch(() => toast(api.invite(), 6000));
+  });
+  body.append(copy, el('div', { class: 'sep' }));
+  const list = el('div', { class: 'list' });
+  const where: Record<string, string> = { town: 'in town', hall: 'at the guild', zone: 'out adventuring', death: 'dead', creation: 'making a character' };
+  list.append(el('div', { class: 'rowcard' }, platePill(ctx.st.rank),
+    el('div', { class: 'grow' }, el('div', { class: 't' }, ctx.st.hero.name + ' (you)'),
+      el('div', { class: 's' }, ctx.st.hero.classId + (p.role === 'host' ? ' \u00b7 host' : '')))));
+  for (const m of p.memberList()) {
+    const s = m.state;
+    list.append(el('div', { class: 'rowcard' }, platePill(m.profile.rank),
+      el('div', { class: 'grow' }, el('div', { class: 't' }, m.profile.name),
+        el('div', { class: 's' }, m.profile.classId + (m.id === p.hostId ? ' \u00b7 host' : '')
+          + ' \u00b7 ' + (s ? (s.dn ? 'DOWN' : where[s.sc] ?? s.sc) : 'arriving'))),
+      s ? el('div', { class: 's' }, Math.ceil(s.hp) + ' / ' + s.mh) : null));
+  }
+  body.append(list);
+  const leave = el('button', { class: 'btn danger', style: 'margin-top:14px' }, p.role === 'host' ? 'Close the party' : 'Leave the party');
+  leave.addEventListener('click', () => { api.leave(); refreshPanel(); });
+  body.append(leave);
+  return shell('Party', p.size + (p.size === 1 ? ' adventurer' : ' adventurers'), body, 560);
 }
 
 // ------------------------------------------------------------------ SHOP
@@ -885,35 +1058,54 @@ function gatePanel(ctx: UICtx): HTMLElement {
   const body = el('div');
   const list = el('div', { class: 'list' });
   const q = st.active;
+  const party = ctx.party.current();
+  const follower = !!party && party.role === 'guest';
 
-  for (const z of Object.values(ZONES)) {
-    const isQuest = q && q.zoneId === z.id;
-    const row = el('div', { class: 'rowcard click', style: isQuest ? 'border-color:#7a6a2c' : '' });
+  for (const id of ZONE_ORDER) {
+    const z = ZONES[id];
+    const locked = z.rank > st.rank;
+    const isQuest = !!q && q.zoneId === z.id;
+    const row = el('div', {
+      class: 'rowcard' + (locked || follower ? ' locked' : ' click'),
+      style: isQuest ? 'border-color:#7a6a2c' : '',
+    });
+    const btn = el('button', { class: 'btn' + (isQuest && !locked ? ' primary' : '') },
+      locked ? 'Locked' : follower ? 'Leader decides' : 'Travel');
+    (btn as HTMLButtonElement).disabled = locked || follower;
     row.append(
-      dangerPill(z.danger),
+      platePill(z.rank),
       el('div', { class: 'grow' },
         el('div', { class: 't' }, z.name),
-        el('div', { class: 's' }, z.desc),
-        isQuest ? el('div', { class: 's', style: 'color:#e0b64f' }, 'Your contract is here') : null,
+        el('div', { class: 's' }, locked ? 'The guild will not send anyone below the ' + rankDef(z.rank).plate + ' out this way.' : z.desc),
+        isQuest ? el('div', { class: 's', style: 'color:#e0b64f' }, (q!.trial ? 'Your trial' : 'Your contract') + ' is here') : null,
       ),
-      el('button', { class: 'btn' + (isQuest ? ' primary' : '') }, 'Travel'),
+      btn,
     );
-    row.addEventListener('click', () => {
-      const boss = q && q.kind === 'boss' && q.zoneId === z.id ? q.target : undefined;
-      closePanel();
-      ctx.travel(z.id, boss);
-    });
+    if (!locked && !follower) {
+      row.addEventListener('click', () => {
+        const boss = q && q.kind === 'boss' && q.zoneId === z.id ? q.target : undefined;
+        closePanel();
+        ctx.travel(z.id, boss);
+      });
+    }
     list.append(row);
   }
   body.append(list);
 
   const d = derived(st);
   body.append(el('div', { class: 'sep' }));
+  if (follower) {
+    body.append(el('div', { class: 'muted', style: 'margin-bottom:8px;color:#9fe0c0' },
+      'You are in a party. When the host sets out, you will follow them automatically.'));
+  } else if (party) {
+    body.append(el('div', { class: 'muted', style: 'margin-bottom:8px;color:#9fe0c0' },
+      'Your party will follow you wherever you go. Their contracts come along too.'));
+  }
   body.append(el('div', { class: 'muted' },
     'Health: ' + Math.ceil(st.hp) + ' / ' + d.maxHp +
     '. The gate does not heal you \u2014 take a bed at the Gilded Sow first.'));
 
-  return shell('City Gate', 'Where the road starts.', body, 620);
+  return shell('The Road South', 'Where the road goes, and who the guild lets walk it.', body, 660);
 }
 
 // ------------------------------------------------------------------ misc

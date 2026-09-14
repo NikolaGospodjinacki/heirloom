@@ -30,7 +30,7 @@ export type PropKind =
   | 'lantern' | 'stall' | 'barrel' | 'crate' | 'flowerbed' | 'bench' | 'fence'
   | 'dummy' | 'rack' | 'signpost' | 'cart' | 'laundry' | 'bush' | 'tree'
   | 'sapling' | 'pot' | 'haybale' | 'well' | 'banner' | 'crops'
-  | 'moat' | 'bridge' | 'shopsign' | 'lilypad';
+  | 'moat' | 'bridge' | 'shopsign' | 'lilypad' | 'statue' | 'tower' | 'hedge';
 
 export interface Prop {
   kind: PropKind;
@@ -44,7 +44,11 @@ export interface Prop {
   label?: string;
 }
 
-export type NpcKind = 'guard' | 'kid' | 'elder' | 'merchant' | 'folk' | 'cat';
+export type NpcKind = 'guard' | 'kid' | 'elder' | 'merchant' | 'folk' | 'cat'
+  | 'clerk' | 'veteran' | 'elf' | 'adventurer';
+
+/** Small touches that make the important people recognisable at a glance. */
+export interface NpcLook { ears?: boolean; beard?: string; patch?: boolean; cape?: string; staff?: boolean; sword?: boolean; oneArm?: boolean }
 
 export interface TownNPC {
   id: string;
@@ -61,9 +65,13 @@ export interface TownNPC {
   lines: string[];
   /** guards hold their post */
   fixed: boolean;
+  look?: NpcLook;
 }
 
 export interface Rect { x: number; y: number; w: number; h: number }
+
+/** Something you can walk up to and use that is not a person or a door: a plaque, a board, the road. */
+export interface Spot { id: string; x: number; y: number; label: string; prompt: string; r?: number }
 
 export interface Mote { x: number; y: number; vx: number; vy: number; t: number; life: number; s: number }
 
@@ -83,11 +91,13 @@ export interface Town {
   gateX: number; gateY: number;
   /** where the homestead plots are laid out, filled in at build time */
   yard: { id: string; x: number; y: number }[];
+  spots: Spot[];
 }
 
 export type Interact =
   | { kind: 'building'; b: Building }
   | { kind: 'npc'; n: TownNPC }
+  | { kind: 'spot'; s: Spot }
   | null;
 
 // --------------------------------------------------------------- population
@@ -98,6 +108,7 @@ const FOLK_NAMES = ['Ilsa', 'Corin', 'Rue', 'Halvard', 'Mera', 'Tam', 'Josa', 'P
 const GUARD_NAMES = ['Sergeant Bram', 'Watchman Ode', 'Corporal Yew', 'Guardsman Pell'];
 
 const KID_LINES = [
+  ['When I grow up I am going to wear an adamant plate. Like the Hero!', 'The elf at the guild said I would make a good copper. What does that mean?'],
   ['You have a real sword! Can I hold it? No? Fine.', 'When I grow up I am going to fight a dragon. A small one first.'],
   ['I found a frog by the fountain and now I cannot find the frog.', 'If you see a frog, it is mine.'],
   ['Mum says adventurers all die young. You look fine to me!'],
@@ -124,6 +135,7 @@ const MERCHANT_LINES = [
   ['Buy two and I will pretend that is a discount.'],
 ];
 const GUARD_LINES = [
+  ['That statue in the square? Edric Harrow. Born three streets from here.', 'Every child in Ashford has tried to climb it. Most of them fell off.'],
   ['Road is open. Keep your hood down past the treeline.'],
   ['Gate shuts at dark. Bang on it and I will let you in, grumbling.'],
   ['Guild business? Go on through. Try to come back.'],
@@ -274,10 +286,30 @@ export function buildTown(st: GameState): Town {
   props.push({ kind: 'lantern', x: gateX - 74, y: moatY + moatH + 22, variant: 1 });
   props.push({ kind: 'lantern', x: gateX + 74, y: moatY + moatH + 22, variant: 1 });
 
-  // wall running east and west of the gate
-  for (let i = 1; i <= 9; i++) {
-    props.push({ kind: 'fence', x: gateX + 46 + (i - 1) * 74, y: gateY + 28, x2: gateX + 46 + i * 74, y2: gateY + 28, variant: 2 });
-    props.push({ kind: 'fence', x: gateX - 46 - (i - 1) * 74, y: gateY + 28, x2: gateX - 46 - i * 74, y2: gateY + 28, variant: 2 });
+  // the town wall, all the way round: no edge of Ashford is invisible
+  const wallL = TS * 2, wallR = W * TS - TS * 2, wallT = TS * 2, wallB = gateY + 28;
+  const wallRun = (x1: number, y1: number, x2: number, y2: number) => {
+    const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / 74));
+    for (let i = 0; i < n; i++) {
+      const a = i / n, b = (i + 1) / n;
+      props.push({
+        kind: 'fence', variant: 2,
+        x: x1 + (x2 - x1) * a, y: y1 + (y2 - y1) * a, x2: x1 + (x2 - x1) * b, y2: y1 + (y2 - y1) * b,
+      });
+    }
+  };
+  wallRun(gateX + 46, wallB, wallR, wallB);
+  wallRun(gateX - 46, wallB, wallL, wallB);
+  wallRun(wallL, wallT, wallR, wallT);
+  wallRun(wallL, wallT, wallL, wallB);
+  wallRun(wallR, wallT, wallR, wallB);
+  for (const [tx, ty] of [[wallL, wallT], [wallR, wallT], [wallL, wallB], [wallR, wallB]] as [number, number][]) {
+    props.push({ kind: 'tower', x: tx, y: ty, variant: 0 });
+  }
+  // past the moat the road runs south between hedges, and that is the way out
+  for (let x = TS; x < W * TS; x += 58) {
+    if (Math.abs(x - gateX) < 100) continue;
+    props.push({ kind: 'hedge', x, y: moatY + moatH + 50, variant: Math.floor(x / 58) % 3 });
   }
   props.push({ kind: 'banner', x: gateX - 62, y: gateY - 50, variant: 1, color: '#4a5f8a' });
   props.push({ kind: 'banner', x: gateX + 50, y: gateY - 50, variant: 1, color: '#4a5f8a' });
@@ -286,7 +318,8 @@ export function buildTown(st: GameState): Town {
   props.push({ kind: 'lantern', x: gateX + 122, y: gateY + 50, variant: 1 });
 
   // ------------------------------------------------------------ the square
-  props.push({ kind: 'well', x: cx, y: cy, variant: 0 });
+  // the Hero, in stone, where the well used to be
+  props.push({ kind: 'statue', x: cx, y: cy + 10, variant: 0 });
   const stallCount = rich ? 5 : 2;
   const stallHues = ['#b8524e', '#4f7fa8', '#6a9a52', '#a8894f', '#8a5fa8'];
   for (let i = 0; i < stallCount; i++) {
@@ -387,11 +420,15 @@ export function buildTown(st: GameState): Town {
     colliders.push({ x: b.x + 4, y: b.y + b.d * 0.35, w: b.w - 8, h: b.d * 0.65 });
   }
   for (const p of props) {
-    if (p.kind === 'fence' && p.variant === 2 && p.x2 !== undefined) {
+    if (p.kind === 'fence' && p.variant === 2 && p.x2 !== undefined && p.y2 !== undefined) {
       const x0 = Math.min(p.x, p.x2), x1 = Math.max(p.x, p.x2);
-      colliders.push({ x: x0, y: p.y - 10, w: x1 - x0, h: 30 });
+      const y0 = Math.min(p.y, p.y2), y1 = Math.max(p.y, p.y2);
+      if (x1 - x0 >= y1 - y0) colliders.push({ x: x0, y: p.y - 10, w: x1 - x0, h: 30 });
+      else colliders.push({ x: p.x - 16, y: y0, w: 32, h: y1 - y0 });
     }
     if (p.kind === 'well') colliders.push({ x: p.x - 26, y: p.y - 14, w: 52, h: 28 });
+    if (p.kind === 'statue') colliders.push({ x: p.x - 32, y: p.y - 22, w: 64, h: 34 });
+    if (p.kind === 'tower') colliders.push({ x: p.x - 34, y: p.y - 34, w: 68, h: 68 });
     if (p.kind === 'moat' && p.w && p.h) {
       const bridge = props.find((b) => b.kind === 'bridge');
       const bx = bridge?.x ?? 0, bw = bridge?.w ?? 0;
@@ -400,6 +437,9 @@ export function buildTown(st: GameState): Town {
     }
     if (p.kind === 'tree') colliders.push({ x: p.x - 10, y: p.y - 8, w: 20, h: 16 });
   }
+  // the hedges south of the moat leave only the road
+  colliders.push({ x: 0, y: moatY + moatH + 24, w: gateX - 66, h: 200 });
+  colliders.push({ x: gateX + 66, y: moatY + moatH + 24, w: W * TS - gateX - 66, h: 200 });
 
   const motes: Mote[] = [];
   for (let i = 0; i < 60; i++) {
@@ -410,6 +450,11 @@ export function buildTown(st: GameState): Town {
     });
   }
 
+  const spots: Spot[] = [
+    { id: 'statue', x: cx, y: cy + 56, label: 'Statue of Edric Harrow', prompt: 'read the plaque', r: 56 },
+    { id: 'road', x: gateX, y: moatY + moatH + 96, label: 'The Road South', prompt: 'set out', r: 64 },
+  ];
+
   const yard = [
     { id: 'herbs', x: cx - 596, y: cy + 524 },
     { id: 'orchard', x: cx - 456, y: cy + 524 },
@@ -418,7 +463,7 @@ export function buildTown(st: GameState): Town {
   ];
 
   return {
-    w: W, h: H, tiles, buildings, props, npcs, colliders, motes, roads, yard,
+    w: W, h: H, tiles, buildings, props, npcs, colliders, motes, roads, yard, spots,
     px: gateX, py: gateY + 96,
     facing: -Math.PI / 2, walkT: 0, time: 0,
     gateX, gateY: gateY + 40,
@@ -437,7 +482,11 @@ export function nearestInteract(t: Town): Interact {
   }
   for (const n of t.npcs) {
     const d = Math.hypot(t.px - n.x, t.py - n.y);
-    if (d < 62 && d < bd) { bd = d; best = { kind: 'npc', n }; }
+    if (d < 72 && d < bd) { bd = d; best = { kind: 'npc', n }; }
+  }
+  for (const s of t.spots ?? []) {
+    const d = Math.hypot(t.px - s.x, t.py - s.y);
+    if (d < (s.r ?? 70) && d < bd) { bd = d; best = { kind: 'spot', s }; }
   }
   return best;
 }
@@ -580,6 +629,49 @@ export function drawProp(ctx: CanvasRenderingContext2D, p: Prop, t: number, rich
       const flicker = 0.72 + Math.sin(t * 3 + x) * 0.07;
       ctx.fillStyle = 'rgba(255,214,140,' + flicker + ')';
       ctx.fillRect(x - 5.5, y - post - 10, 11, 9);
+      break;
+    }
+    case 'statue': {
+      shadow(ctx, x, y, 30, 0.3);
+      ctx.fillStyle = '#8f877c';
+      roundRect(ctx, x - 28, y - 26, 56, 26, 4); ctx.fill();
+      ctx.fillStyle = '#a39b8f';
+      ctx.fillRect(x - 32, y - 30, 64, 6);
+      ctx.fillStyle = 'rgba(40,30,20,0.35)';
+      ctx.fillRect(x - 12, y - 18, 24, 8);
+      const stone = '#b8b0a4', deep = '#958d82';
+      ctx.fillStyle = deep;
+      roundRect(ctx, x - 8, y - 56, 7, 26, 3); ctx.fill();
+      roundRect(ctx, x + 1, y - 56, 7, 26, 3); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x - 12, y - 90); ctx.lineTo(x - 19, y - 36); ctx.lineTo(x - 7, y - 42); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = stone;
+      roundRect(ctx, x - 12, y - 94, 24, 44, 6); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 102, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.save();
+      ctx.translate(x + 10, y - 88); ctx.rotate(-2.1);
+      roundRect(ctx, 0, -3, 22, 6, 3); ctx.fill();
+      ctx.restore();
+      ctx.strokeStyle = deep; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + 21, y - 108); ctx.lineTo(x + 21, y - 114); ctx.stroke();
+      ctx.save();
+      ctx.shadowColor = '#ffd27a'; ctx.shadowBlur = 16; ctx.fillStyle = '#ffe0a0';
+      roundRect(ctx, x + 15, y - 127, 12, 13, 3); ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = deep;
+      ctx.fillRect(x - 17, y - 72, 3, 38);
+      break;
+    }
+    case 'hedge': {
+      shadow(ctx, x, y, 26, 0.22);
+      ctx.fillStyle = rich ? '#4a7a3c' : '#56663a';
+      ctx.beginPath();
+      ctx.arc(x - 16, y - 12, 13, 0, Math.PI * 2);
+      ctx.arc(x, y - 17, 15, 0, Math.PI * 2);
+      ctx.arc(x + 16, y - 12, 13, 0, Math.PI * 2);
+      ctx.rect(x - 28, y - 14, 56, 14);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath(); ctx.arc(x - 4, y - 24, 7, 0, Math.PI * 2); ctx.fill();
       break;
     }
     case 'well':
@@ -1015,6 +1107,14 @@ export function drawTownNpc(ctx: CanvasRenderingContext2D, n: TownNPC, near: boo
   shadow(ctx, n.x, n.y, 10 * scale, 0.24);
   ctx.save();
   ctx.translate(n.x, n.y - bob);
+  const look = n.look ?? {};
+  if (look.cape) {
+    ctx.fillStyle = look.cape;
+    ctx.beginPath();
+    ctx.moveTo(-8 * scale, -H + 12); ctx.lineTo(8 * scale, -H + 12);
+    ctx.lineTo(11 * scale, -2); ctx.lineTo(-11 * scale, -2);
+    ctx.closePath(); ctx.fill();
+  }
 
   ctx.fillStyle = shade(a.cloth, -46);
   ctx.fillRect(-5 * scale, -13 * scale, 4 * scale, 13 * scale);
@@ -1034,6 +1134,36 @@ export function drawTownNpc(ctx: CanvasRenderingContext2D, n: TownNPC, near: boo
   ctx.fillRect(-3.4 * scale, -H + 3, 1.8, 2.2);
   ctx.fillRect(1.8 * scale, -H + 3, 1.8, 2.2);
 
+  if (look.ears) {
+    ctx.fillStyle = a.skin;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(s * 7 * scale, -H + 1); ctx.lineTo(s * 16 * scale, -H - 6); ctx.lineTo(s * 7.5 * scale, -H + 6);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  if (look.beard) {
+    ctx.fillStyle = look.beard;
+    ctx.beginPath(); ctx.ellipse(0, -H + 8.5, 6.5 * scale, 5.5 * scale, 0, 0, Math.PI); ctx.fill();
+  }
+  if (look.patch) {
+    ctx.fillStyle = '#1a1714';
+    ctx.fillRect(-4.6 * scale, -H + 2.2, 3.8, 3.2);
+    ctx.strokeStyle = '#1a1714'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-8.4 * scale, -H); ctx.lineTo(8.4 * scale, -H + 4); ctx.stroke();
+  }
+  if (look.staff) {
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.moveTo(11 * scale, -H - 10); ctx.lineTo(10 * scale, 0); ctx.stroke();
+    ctx.fillStyle = '#9be0d2';
+    ctx.beginPath(); ctx.arc(11 * scale, -H - 12, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  if (look.sword) {
+    ctx.fillStyle = '#c9ccd6';
+    ctx.fillRect(-12 * scale, -H + 18, 2.4, 20);
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(-13.5 * scale, -H + 16, 5, 3);
+  }
   if (n.kind === 'guard') {
     ctx.fillStyle = '#aeb6c4';
     ctx.beginPath(); ctx.arc(0, -H + 2, 9.4 * scale, Math.PI, Math.PI * 2); ctx.fill();

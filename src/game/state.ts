@@ -8,10 +8,18 @@ import { ITEM_DEFS, itemMods, makeItem, slotOf } from './items';
 import {
   BloodlineMemory, emptySkills, levelFromXp, rollHero, rollVillage,
 } from './bloodline';
-import { rollQuests, SHOP_STOCK_POOL, SHOP_STOCK_RICH, ZONES } from './content';
+import { rollBoard, SHOP_STOCK_POOL, SHOP_STOCK_RICH, ZONES } from './content';
+import { MAX_RANK, rankDef, rankLabel, rankPerks } from './ranks';
 import { DashProfile, dashProfile, memoryEarned } from './techniques';
 
-export const SAVE_KEY = 'heirloom.save.v2';
+/** ?slot=name keeps a second save on the same machine, for a second player or for testing. */
+const SLOT = (() => {
+  try {
+    const s = new URLSearchParams(location.search).get('slot');
+    return s && /^[a-z0-9_-]{1,24}$/i.test(s) ? s : '';
+  } catch { return ''; }
+})();
+export const SAVE_KEY = 'heirloom.save.v2' + (SLOT ? '.' + SLOT : '');
 export const SAVE_VERSION = 2;
 
 export interface Lifetime {
@@ -43,7 +51,7 @@ export interface GameState {
   board: Quest[];
   active: Quest | null;
   shopStock: Item[];
-  scene: 'creation' | 'town' | 'zone' | 'death';
+  scene: 'creation' | 'town' | 'zone' | 'death' | 'hall';
   zoneId: string;
   hp: number;
   mana: number;
@@ -57,7 +65,17 @@ export interface GameState {
   memory: number;
   log: { t: string; kind: string; at: number }[];
   lastRealTick: number;
-  epitaphs: { name: string; gen: number; cause: string; kills: number }[];
+  epitaphs: { name: string; gen: number; cause: string; kills: number; rank?: number }[];
+  /** adventurer rank: 0 is a copper plate, 6 is adamant */
+  rank: number;
+  /** merit toward the next promotion trial */
+  merit: number;
+  /** the best plate anyone of the bloodline has worn */
+  renown: number;
+  /** bosses the bloodline has put down, by id */
+  trophies: Record<string, number>;
+  /** story beats already seen; keys starting with life: are forgotten at death */
+  story: Record<string, number>;
 }
 
 export const PLOT_DEFS = [
@@ -116,7 +134,7 @@ export function newGame(classId: ClassId): GameState {
   const st: GameState = {
     version: SAVE_VERSION, seed, hero, bag, equipped, chest: makeGrid(5, 3),
     gold: 35, village, homestead: newHomestead(),
-    board: rollQuests(r, 4, 50, 1), active: null,
+    board: rollBoard(r, 0, 50), active: null,
     shopStock: rollShopStock(r, village),
     scene: 'town', zoneId: 'meadow',
     hp: 1, mana: 1, stamina: 1,
@@ -124,6 +142,7 @@ export function newGame(classId: ClassId): GameState {
     legacy, generation: 1, donated: 0,
     techniques: ['dash', 'jump'], memory: 1,
     log: [], lastRealTick: Date.now(), epitaphs: [],
+    rank: 0, merit: 0, renown: 0, trophies: {}, story: {},
   };
   const d = derived(st);
   st.hp = d.maxHp; st.mana = d.maxMana; st.stamina = d.maxStamina;
@@ -197,6 +216,8 @@ export function activeItems(st: GameState): Item[] {
 export function derived(st: GameState): Derived {
   const h = st.hero;
   const stats: Stats = { ...h.stats };
+  const perks = rankPerks(st.rank ?? 0);
+  if (perks.stats) for (const k of Object.keys(stats) as (keyof Stats)[]) stats[k] += perks.stats;
   let hp = 0, sp = 0, armor = 0, atk = 0, speedBonus = 0, crit = 0;
 
   for (const it of activeItems(st)) {
@@ -219,7 +240,7 @@ export function derived(st: GameState): Derived {
   const hunting = L('hunting'), slaying = L('slaying'), foot = L('footwork');
   const hag = L('haggling');
 
-  let maxHp = 46 + stats.vit * 6 + vigor * 5 + hp;
+  let maxHp = 46 + stats.vit * 6 + vigor * 5 + hp + perks.hp;
   if (t === 'ironblood') maxHp += 30;
   if (t === 'sickly') maxHp -= 25;
 
@@ -230,6 +251,8 @@ export function derived(st: GameState): Derived {
   let spTotal = sp + stats.int * 0.92 + sorcery * 0.95;
   if (t === 'brute') { atkTotal *= 1.3; spTotal *= 0.75; }
   if (t === 'mageborn') { atkTotal *= 0.85; spTotal *= 1.35; }
+  atkTotal *= 1 + perks.dmg;
+  spTotal *= 1 + perks.dmg;
 
   let speed = 118 + stats.agi * 2.2 + foot * 1.6 + speedBonus;
   if (t === 'swift') speed *= 1.18;
@@ -410,13 +433,26 @@ export function upgradeCost(plot: Homestead['plots'][number]): number {
 // -------------------------------------------------------------------- quests
 
 export function refreshBoard(st: GameState): void {
-  const tier = Math.min(4, 1 + Math.floor(st.lifetime.questsDone / 3) + Math.floor(st.generation / 2));
-  st.board = rollQuests(rng, 4, st.village.prosperity, tier);
+  st.board = rollBoard(rng, st.rank ?? 0, st.village.prosperity);
 }
 
-export function completeQuest(st: GameState): void {
+/** Has this adventurer earned the right to ask for a promotion trial? */
+export function trialReady(st: GameState): boolean {
+  return st.rank < MAX_RANK && st.merit >= rankDef(st.rank).merit;
+}
+
+export function promote(st: GameState): boolean {
+  if (st.rank >= MAX_RANK) return false;
+  st.rank++;
+  st.merit = 0;
+  st.renown = Math.max(st.renown ?? 0, st.rank);
+  pushLog(st, 'Promoted to ' + rankLabel(st.rank) + '.', 'level');
+  return true;
+}
+
+export function completeQuest(st: GameState): { promoted: boolean; merit: number } {
   const q = st.active;
-  if (!q || q.have < q.need) return;
+  if (!q || q.have < q.need) return { promoted: false, merit: 0 };
   st.gold += q.rewardGold;
   st.lifetime.goldEarned += q.rewardGold;
   st.lifetime.questsDone++;
@@ -429,16 +465,20 @@ export function completeQuest(st: GameState): void {
     if (!autoPlace(st.bag, it)) pushLog(st, 'No room for ' + it.name + ' - it was left behind.', 'bad');
     else pushLog(st, 'Reward: ' + it.name, 'good');
   }
-  pushLog(st, 'Quest complete: ' + q.title + '  (+' + q.rewardGold + 'g)', 'good');
+  const merit = q.trial ? 0 : (q.merit ?? 0);
+  st.merit += merit;
+  pushLog(st, 'Quest complete: ' + q.title + '  (+' + q.rewardGold + 'g' + (merit ? ', +' + merit + ' merit' : '') + ')', 'good');
+  const promoted = q.trial ? promote(st) : false;
   st.active = null;
   refreshBoard(st);
+  return { promoted, merit };
 }
 
 // ---------------------------------------------------------------- death/heir
 
 export function die(st: GameState, cause: string): void {
   st.epitaphs.unshift({
-    name: st.hero.name, gen: st.generation, cause, kills: st.lifetime.kills,
+    name: st.hero.name, gen: st.generation, cause, kills: st.lifetime.kills, rank: st.rank,
   });
   if (st.epitaphs.length > 12) st.epitaphs.pop();
 
@@ -472,6 +512,11 @@ export function die(st: GameState, cause: string): void {
   st.donated = 0;
   st.lifetime = { kills: 0, questsDone: 0, bosses: 0, goldEarned: 0, treesFelled: 0, rocksMined: 0, born: Date.now() };
   st.active = null;
+  // the guild remembers the family name, and lets the heir skip the first few plates
+  st.renown = Math.max(st.renown ?? 0, st.rank ?? 0);
+  st.rank = Math.floor(st.renown / 2);
+  st.merit = 0;
+  for (const k of Object.keys(st.story ?? {})) if (k.startsWith('life:')) delete st.story[k];
   st.shopStock = rollShopStock(rng, village);
   refreshBoard(st);
   const d = derived(st);
@@ -499,7 +544,21 @@ export function load(): GameState | null {
     const st = JSON.parse(raw) as GameState;
     if (st.version !== SAVE_VERSION) return null;
     if (!st.hero || !st.bag) return null;
-    if (st.scene === 'zone') st.scene = 'town';
+    if (st.scene === 'zone' || st.scene === 'hall') st.scene = 'town';
+    if (typeof st.rank !== 'number') st.rank = 0;
+    if (typeof st.merit !== 'number') st.merit = 0;
+    if (typeof st.renown !== 'number') st.renown = st.rank;
+    if (!st.trophies) st.trophies = {};
+    if (!st.story) st.story = {};
+    let stale = false;
+    const fix = (q: Quest) => {
+      if (!ZONES[q.zoneId]) q.zoneId = 'meadow';
+      if (typeof q.rank !== 'number') { q.rank = ZONES[q.zoneId].rank; stale = true; }
+      if (typeof q.merit !== 'number') q.merit = 20;
+      if (q.target === 'emberwyrm') { q.target = 'stormtalon'; q.targetName = 'Stormtalon'; q.title = 'Contract: Stormtalon'; }
+    };
+    st.board.forEach(fix);
+    if (st.active) fix(st.active);
     if (!st.hero.skills) st.hero.skills = emptySkills();
     for (const k of Object.keys(emptySkills()) as SkillKey[]) {
       if (!st.hero.skills[k]) st.hero.skills[k] = { xp: 0 };
@@ -511,6 +570,7 @@ export function load(): GameState | null {
     if (!st.techniques.includes('jump')) st.techniques.push('jump');
     if (!st.techniques) st.techniques = ['dash'];
     if (typeof st.memory !== 'number') st.memory = 0;
+    if (stale) refreshBoard(st);
     st.lastRealTick = Date.now();
     return st;
   } catch {

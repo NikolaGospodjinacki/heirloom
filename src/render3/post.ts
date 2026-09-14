@@ -97,7 +97,7 @@ export function makePost(stage: Stage): Post {
   return post;
 }
 
-export type Mood = 'town' | 'wild' | 'gloom' | 'ember';
+export type Mood = 'town' | 'wild' | 'gloom' | 'ember' | 'snow' | 'hall';
 
 const MOODS: Record<Mood, { warmth: [number, number, number]; saturation: number; vignette: number; bloom: number }> = {
   // late afternoon in the village: golden and a little rich
@@ -108,6 +108,10 @@ const MOODS: Record<Mood, { warmth: [number, number, number]; saturation: number
   gloom: { warmth: [0.96, 1.0, 1.06], saturation: 0.96, vignette: 1.15, bloom: 0.5 },
   // the ridge is red already; leave its colour alone and let the embers glow
   ember: { warmth: [1.0, 0.98, 0.96], saturation: 1.02, vignette: 0.8, bloom: 0.6 },
+  // the mountain: clean cold light, snow that nearly glows
+  snow: { warmth: [1.0, 1.0, 1.02], saturation: 1.12, vignette: 0.8, bloom: 0.26 },
+  // lamplight indoors: warm, close, a little dim at the edges
+  hall: { warmth: [1.04, 1.0, 0.92], saturation: 1.02, vignette: 0.95, bloom: 0.4 },
 };
 
 /** The grade for a scene: warmth, colour, how dark the corners get and how much things glow. */
